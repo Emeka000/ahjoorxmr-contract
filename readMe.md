@@ -1,6 +1,6 @@
 # Ahjoor - Decentralized ROSCA Platform
 
-**Ahjoor** is a decentralized Rotating Savings and Credit Association (ROSCA) platform built on the Stellar blockchain. It empowers communities and savings groups to pool funds and take turns receiving the collective pot — with complete transparency, security, and no middlemen.
+**Ahjoor** is a decentralized Rotating Savings and Credit Association (ROSCA) platform built on the Stellar blockchain. It empowers communities and savings groups to pool funds and take turns receiving the collective pot with complete transparency, security, and no middlemen.
 
 ## Overview
 
