@@ -111,15 +111,6 @@ Ahjoor's smart contracts handle:
 - **Token Standard**: SEP-41 / Stellar Asset Contract (XLM or any compatible token)
 - **Testing**: Soroban test utilities
 
-## Contributing
-
-We welcome contributions! Please see our [CONTRIBUTING.md](CONTRIBUTING.md) for details on:
-
-- Setting up your development environment
-- Code style and standards
-- Testing requirements
-- Submitting pull requests
-
 ## Resources
 
 - [Stellar Documentation](https://developers.stellar.org/)
