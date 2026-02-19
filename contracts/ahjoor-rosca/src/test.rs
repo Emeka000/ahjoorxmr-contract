@@ -4,8 +4,8 @@ use super::*;
 use soroban_sdk::token::Client as TokenClient;
 use soroban_sdk::token::StellarAssetClient as TokenAdminClient;
 use soroban_sdk::{
-    testutils::{Address as _, Ledger},
-    vec, Address, Env,
+    testutils::{Address as _, Events, Ledger},
+    vec, Address, Env, IntoVal,
 };
 
 #[test]
@@ -335,4 +335,60 @@ fn test_admin_assigned_e2e_all_rounds() {
     client.contribute(&u1);
     client.contribute(&u2);
     assert_eq!(token_client.balance(&u1), 2000);
+}
+
+#[test]
+fn test_verify_contract_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(AhjoorContract, ());
+    let client = AhjoorContractClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let token_admin = env.register_stellar_asset_contract_v2(admin.clone()).address();
+    let token_admin_client = TokenAdminClient::new(&env, &token_admin);
+    
+    let user1 = Address::generate(&env);
+    let user2 = Address::generate(&env);
+    token_admin_client.mint(&user1, &1000);
+    token_admin_client.mint(&user2, &1000);
+
+    let members = vec![&env, user1.clone(), user2.clone()];
+    let amount = 100i128;
+
+    // 1. Verify ContractInitialized
+    client.init(&admin, &members, &amount, &token_admin, &3600, &PayoutStrategy::RoundRobin, &None);
+    
+    let last_event = env.events().all().last().unwrap();
+    assert_eq!(last_event.0, contract_id);
+    // Topics check
+    assert_eq!(last_event.1, vec![&env, symbol_short!("init").into_val(&env)]);
+    // Data check: Convert Val -> (u32, i128)
+    let init_data: (u32, i128) = soroban_sdk::FromVal::from_val(&env, &last_event.2);
+    assert_eq!(init_data, (2u32, amount));
+
+    // 2. Verify ContributionReceived
+    client.contribute(&user1);
+    
+    let contribution_event = env.events().all().last().unwrap();
+    assert_eq!(contribution_event.1, vec![&env, symbol_short!("contrib").into_val(&env), user1.clone().into_val(&env), 0u32.into_val(&env)]);
+    // Data check: Val -> i128
+    let contrib_amt: i128 = soroban_sdk::FromVal::from_val(&env, &contribution_event.2);
+    assert_eq!(contrib_amt, amount);
+
+    // 3. Verify RoundCompleted and RoundReset
+    client.contribute(&user2);
+    
+    let all_events = env.events().all();
+    let reset_event = all_events.get(all_events.len() - 1).unwrap();
+    let payout_event = all_events.get(all_events.len() - 2).unwrap();
+
+    // RoundCompleted check: Val -> (Address, i128)
+    let payout_data: (Address, i128) = soroban_sdk::FromVal::from_val(&env, &payout_event.2);
+    assert_eq!(payout_data, (user1.clone(), 200i128));
+
+    // RoundReset check: Val -> u32
+    let reset_round: u32 = soroban_sdk::FromVal::from_val(&env, &reset_event.2);
+    assert_eq!(reset_round, 0u32);
 }
