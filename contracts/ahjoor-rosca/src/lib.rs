@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, symbol_short, token, Address, Env, Vec, Map};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[contracttype]
@@ -22,6 +22,9 @@ pub enum DataKey {
     RoundDuration,   // u64
     RoundDeadline,   // u64
     Defaulters,      // Vec<Address>
+    PenaltyAmount,   // i128
+    DefaultCount,    // Map<Address, u32>
+    SuspendedMembers, // Vec<Address>
 }
 
 #[contract]
@@ -38,6 +41,7 @@ impl AhjoorContract {
         round_duration: u64,
         strategy: PayoutStrategy,
         custom_order: Option<Vec<Address>>,
+        penalty_amount: i128,
     ) {
         if env.storage().instance().has(&DataKey::Members) {
             panic!("Already initialized");
@@ -86,6 +90,15 @@ impl AhjoorContract {
         env.storage()
             .instance()
             .set(&DataKey::Defaulters, &Vec::<Address>::new(&env));
+        env.storage()
+            .instance()
+            .set(&DataKey::PenaltyAmount, &penalty_amount);
+        env.storage()
+            .instance()
+            .set(&DataKey::DefaultCount, &Map::<Address, u32>::new(&env));
+        env.storage()
+            .instance()
+            .set(&DataKey::SuspendedMembers, &Vec::<Address>::new(&env));
 
         // Event: ContractInitialized
         env.events().publish(
@@ -199,10 +212,90 @@ impl AhjoorContract {
         Self::reset_round_state(&env, current_round);
     }
 
+    pub fn penalise_defaulter(env: Env, member: Address) {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Admin not set");
+        admin.require_auth();
+
+        let penalty_amount: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PenaltyAmount)
+            .unwrap_or(0);
+        if penalty_amount == 0 {
+            panic!("Penalty system is disabled");
+        }
+
+        let defaulters: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Defaulters)
+            .unwrap_or(Vec::new(&env));
+        if !defaulters.contains(&member) {
+            panic!("Member is not a defaulter for this round");
+        }
+
+        // Transfer penalty from defaulter to contract
+        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let client = token::Client::new(&env, &token_addr);
+        
+        // Require auth from the member being penalized
+        member.require_auth();
+        client.transfer(&member, &env.current_contract_address(), &penalty_amount);
+
+        // Update default count
+        let mut default_count: Map<Address, u32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::DefaultCount)
+            .unwrap_or(Map::new(&env));
+        let current_defaults = default_count.get(member.clone()).unwrap_or(0);
+        let new_default_count = current_defaults + 1;
+        default_count.set(member.clone(), new_default_count);
+        env.storage()
+            .instance()
+            .set(&DataKey::DefaultCount, &default_count);
+
+        // Event: MemberDefaulted
+        let current_round: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentRound)
+            .unwrap();
+        env.events().publish(
+            (symbol_short!("defaulted"), member.clone(), current_round),
+            (penalty_amount, new_default_count),
+        );
+
+        // Check if member should be suspended (2+ defaults)
+        if new_default_count >= 2 {
+            let mut suspended_members: Vec<Address> = env
+                .storage()
+                .instance()
+                .get(&DataKey::SuspendedMembers)
+                .unwrap_or(Vec::new(&env));
+            if !suspended_members.contains(&member) {
+                suspended_members.push_back(member.clone());
+                env.storage()
+                    .instance()
+                    .set(&DataKey::SuspendedMembers, &suspended_members);
+
+                // Event: MemberSuspended
+                env.events().publish(
+                    (symbol_short!("suspended"), member.clone()),
+                    new_default_count,
+                );
+            }
+        }
+    }
+
     fn complete_round_payout(
         env: &Env,
-        paid_members: &Vec<Address>,
-        amount: i128,
+        _paid_members: &Vec<Address>,
+        _amount: i128,
         client: token::Client,
     ) {
         let current_round: u32 = env
@@ -212,10 +305,32 @@ impl AhjoorContract {
             .unwrap();
         let payout_order: Vec<Address> =
             env.storage().instance().get(&DataKey::PayoutOrder).unwrap();
+        let suspended_members: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SuspendedMembers)
+            .unwrap_or(Vec::new(env));
 
-        let recipient_idx = current_round % payout_order.len();
+        // Find next non-suspended recipient
+        let mut recipient_idx = current_round % payout_order.len();
+        let mut attempts = 0;
+        while attempts < payout_order.len() {
+            let potential_recipient = payout_order.get(recipient_idx).unwrap();
+            if !suspended_members.contains(&potential_recipient) {
+                break;
+            }
+            recipient_idx = (recipient_idx + 1) % payout_order.len();
+            attempts += 1;
+        }
+
+        if attempts >= payout_order.len() {
+            panic!("All members are suspended");
+        }
+
         let payout_recipient = payout_order.get(recipient_idx).unwrap();
-        let total_pot = amount * (paid_members.len() as i128);
+        
+        // Total pot is all the tokens in the contract (contributions + penalties)
+        let total_pot = client.balance(&env.current_contract_address());
 
         client.transfer(
             &env.current_contract_address(),
