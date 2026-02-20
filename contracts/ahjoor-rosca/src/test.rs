@@ -13,11 +13,13 @@ fn test_rosca_flow_with_time_locks() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, AhjoorContract);
+    let contract_id = env.register(AhjoorContract, ());
     let client = AhjoorContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let token_admin = env.register_stellar_asset_contract(admin.clone());
+    let token_admin = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     let token_client = TokenClient::new(&env, &token_admin);
     let token_admin_client = TokenAdminClient::new(&env, &token_admin);
 
@@ -67,7 +69,7 @@ fn test_rosca_flow_with_time_locks() {
 fn test_cannot_close_early() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, AhjoorContract);
+    let contract_id = env.register(AhjoorContract, ());
     let client = AhjoorContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
@@ -92,11 +94,13 @@ fn test_on_time_contribution() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, AhjoorContract);
+    let contract_id = env.register(AhjoorContract, ());
     let client = AhjoorContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let token_admin = env.register_stellar_asset_contract(admin.clone());
+    let token_admin = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     let token_admin_client = TokenAdminClient::new(&env, &token_admin);
     let token_client = TokenClient::new(&env, &token_admin);
 
@@ -129,11 +133,13 @@ fn test_late_contribution_rejection() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, AhjoorContract);
+    let contract_id = env.register(AhjoorContract, ());
     let client = AhjoorContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let token_admin = env.register_stellar_asset_contract(admin.clone());
+    let token_admin = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     let user1 = Address::generate(&env);
     let members = vec![&env, user1.clone()];
 
@@ -156,11 +162,13 @@ fn test_admin_close_round() {
     let env = Env::default();
     env.mock_all_auths();
 
-    let contract_id = env.register_contract(None, AhjoorContract);
+    let contract_id = env.register(AhjoorContract, ());
     let client = AhjoorContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let token_admin = env.register_stellar_asset_contract(admin.clone());
+    let token_admin = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     let members = vec![&env, Address::generate(&env)];
 
     client.init(
@@ -186,11 +194,13 @@ fn test_admin_close_round() {
 fn test_admin_assigned_strategy_execution() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, AhjoorContract);
+    let contract_id = env.register(AhjoorContract, ());
     let client = AhjoorContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let token_admin = env.register_stellar_asset_contract(admin.clone());
+    let token_admin = env
+        .register_stellar_asset_contract_v2(admin.clone())
+        .address();
     let token_admin_client = TokenAdminClient::new(&env, &token_admin);
 
     let user1 = Address::generate(&env);
@@ -226,7 +236,7 @@ fn test_admin_assigned_strategy_execution() {
 fn test_invalid_admin_order_validation() {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register_contract(None, AhjoorContract);
+    let contract_id = env.register(AhjoorContract, ());
     let client = AhjoorContractClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
