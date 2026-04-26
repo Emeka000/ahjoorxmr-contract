@@ -1,4 +1,4 @@
-use crate::{errors::Error, events, DataKey, PayoutRecord};
+use crate::{errors::Error, events, audit_trail, ContributionEntry, DataKey, DataKey2, PersistentKey, PayoutRecord};
 use soroban_sdk::{panic_with_error, token, Address, Env, Map, Vec};
 
 const PERSISTENT_LIFETIME_THRESHOLD: u32 = 100_000;
@@ -40,7 +40,7 @@ pub(crate) fn complete_round_payout(env: &Env, _paid_members: &Vec<Address>) {
     let skip_requests: Map<(Address, u32), bool> = env
         .storage()
         .instance()
-        .get(&DataKey::SkipRequests)
+        .get(&DataKey2::SkipRequests)
         .unwrap_or(Map::new(env));
 
     let mut recipient_idx = (current_round % payout_order.len()) as u32;
@@ -66,7 +66,7 @@ pub(crate) fn complete_round_payout(env: &Env, _paid_members: &Vec<Address>) {
     let preferences: Map<Address, bool> = env
         .storage()
         .instance()
-        .get(&DataKey::ReinvestPreference)
+        .get(&DataKey2::ReinvestPreference)
         .unwrap_or(Map::new(env));
     let should_reinvest = preferences.get(payout_recipient.clone()).unwrap_or(false);
 
@@ -115,7 +115,7 @@ pub(crate) fn complete_round_payout(env: &Env, _paid_members: &Vec<Address>) {
         .unwrap_or(Map::new(env));
 
     let mut expected_pot: i128 = 0;
-    for member in paid_members.iter() {
+    for member in _paid_members.iter() {
         let tier_bps = tiers.get(member.clone()).unwrap_or(10_000);
         let member_expected = (base_amount * tier_bps as i128) / 10_000;
         expected_pot += member_expected;
@@ -137,7 +137,7 @@ pub(crate) fn complete_round_payout(env: &Env, _paid_members: &Vec<Address>) {
     let mut insurance_pool: i128 = env
         .storage()
         .instance()
-        .get(&DataKey::InsurancePool)
+        .get(&DataKey2::InsurancePool)
         .unwrap_or(0);
     let shortfall = expected_pot - actual_pot;
     if shortfall > 0 && insurance_pool > 0 {
@@ -149,7 +149,7 @@ pub(crate) fn complete_round_payout(env: &Env, _paid_members: &Vec<Address>) {
         insurance_pool -= draw_amount;
         env.storage()
             .instance()
-            .set(&DataKey::InsurancePool, &insurance_pool);
+            .set(&DataKey2::InsurancePool, &insurance_pool);
         events::emit_insurance_paid_out(env, current_round, draw_amount, insurance_pool);
 
         // Top up the actual pot with the drawn amount (add to base token balance tracking)
@@ -201,7 +201,7 @@ pub(crate) fn complete_round_payout(env: &Env, _paid_members: &Vec<Address>) {
     let mut history: Vec<PayoutRecord> = env
         .storage()
         .persistent()
-        .get(&DataKey::RoundHistory)
+        .get(&PersistentKey::RoundHistory)
         .unwrap_or(Vec::new(env));
     history.push_back(PayoutRecord {
         recipient: payout_recipient.clone(),
@@ -209,9 +209,9 @@ pub(crate) fn complete_round_payout(env: &Env, _paid_members: &Vec<Address>) {
     });
     env.storage()
         .persistent()
-        .set(&DataKey::RoundHistory, &history);
+        .set(&PersistentKey::RoundHistory, &history);
     env.storage().persistent().extend_ttl(
-        &DataKey::RoundHistory,
+        &PersistentKey::RoundHistory,
         PERSISTENT_LIFETIME_THRESHOLD,
         PERSISTENT_BUMP_AMOUNT,
     );

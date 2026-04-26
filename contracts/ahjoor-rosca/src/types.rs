@@ -141,7 +141,7 @@ pub struct Proposal {
 /// PERSISTENT (unbounded growth — individual TTL per key):
 ///   RoundHistory — appended every round; must outlive instance TTL
 ///
-/// TEMPORARY (short-lived in-progress state — auto-expires):
+/// TEMPORARY (short-lived in-progress state — auto-expires):\
 ///   ExitRequests — pending admin approval; no long-term retention needed
 #[derive(Clone)]
 #[contracttype]
@@ -191,23 +191,69 @@ pub enum DataKey {
     ContractVersion,         // u32
     FeeBps,                  // u32 — protocol fee in basis points
     FeeRecipient,            // Address — receives protocol fees
-    MaxDefaults,             // u32 — suspension threshold (consecutive missed rounds)
-    UseTimestampSchedule,   // bool
-    RoundDurationSeconds,   // u64
-    RoundDeadlineTimestamp, // u64
-    MaxMembers,             // u32
-    MemberTiers,            // Map<Address, u32> — multiplier in bps (e.g., 10000 = 1x)
-    InsurancePool,           // i128 — pool balance for defaulter coverage
-    InsuranceContributionBps, // u32 — auto-deduction bps from each contribution (optional)
+    MaxDefaults,             // u32 — suspension threshold
+    UseTimestampSchedule,    // bool
+    RoundDurationSeconds,    // u64
+    RoundDeadlineTimestamp,  // u64
+    MaxMembers,              // u32
+    MemberTiers,             // Map<Address, u32>
+}
+
+/// Overflow key enum — DataKey is capped at 50 variants by the soroban XDR limit.
+/// Less-frequently-used instance keys go here.
+#[derive(Clone)]
+#[contracttype]
+pub enum DataKey2 {
+    InsurancePool,           // i128
+    InsuranceContributionBps, // u32
     SkipFee,                 // i128
     MaxSkipsPerCycle,        // u32
     SkipRequests,            // Map<(Address, u32), bool>
-    MemberSkips,             // Map<(Address, u32), u32> (Address, Cycle) -> Count
-    QuorumConfig,            // Map<ProposalType, u32> (Type -> Quorum Bps)
+    MemberSkips,             // Map<(Address, u32), u32>
+    QuorumConfig,            // Map<ProposalType, u32>
     VotingMode,              // VotingMode
     ReinvestPreference,      // Map<Address, bool>
-    // --- Persistent ---
+    ExitRequests,            // Map<Address, ExitRequest>
+    /// Token whitelist contract address
+    TokenWhitelistContract,  // Address
+    // Audit Trail
+    CycleRecords,            // Map<u32, CycleRecord> — per-cycle audit trail
+    CycleRecordRetentionWindow, // u32 — number of cycles to retain in persistent storage
+    ArchivedCycleRecords,    // Map<u32, CycleRecord> — archived records in temporary storage
+    CycleStartTimestamps,    // Map<u32, u64> — track when each cycle started
+}
+
+/// Persistent storage keys — kept separate because DataKey was hitting
+/// the 64-variant limit enforced by the `#[contracttype]` macro.
+#[derive(Clone)]
+#[contracttype]
+pub enum PersistentKey {
     RoundHistory, // Vec<PayoutRecord> — grows every round
-    // --- Temporary ---
-    ExitRequests, // Map<Address, ExitRequest> — pending admin action
+}
+
+// ── Audit Trail ────────────────────────────────────────────────────────────────
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContributionEntry {
+    pub member: Address,
+    pub amount: i128,
+    pub timestamp: u64,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CycleRecord {
+    pub cycle_number: u32,
+    pub total_pool_amount: i128,
+    pub payout_recipient: Address,
+    pub payout_amount: i128,
+    pub contributions: Vec<ContributionEntry>,
+    pub defaulters: Vec<Address>,
+    pub skippers: Vec<Address>,
+    pub penalties_collected: i128,
+    pub fee_collected: i128,
+    pub insurance_drawn: i128,
+    pub cycle_start_timestamp: u64,
+    pub cycle_end_timestamp: u64,
 }

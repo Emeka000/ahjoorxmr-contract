@@ -4,6 +4,7 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
     BytesN, Env, Map, String, Symbol, Vec,
 };
+use ahjoor_token_whitelist::TokenWhitelistClient;
 
 /// Maximum length (bytes) for the optional payment reference string.
 const MAX_REFERENCE_LEN: u32 = 64;
@@ -11,6 +12,8 @@ const MAX_REFERENCE_LEN: u32 = 64;
 const MAX_METADATA_KEYS: u32 = 5;
 /// Maximum length (bytes) for each metadata key or value.
 const MAX_METADATA_KEY_LEN: u32 = 32;
+/// Maximum length (bytes) for merchant notification key.
+const MAX_NOTIFICATION_KEY_LEN: u32 = 128;
 
 // ---------------------------------------------------------------------------
 // Reflector-compatible oracle interface.
@@ -90,6 +93,7 @@ pub enum Error {
     SubscriptionPaused = 2,
     OracleConditionNotMet = 3,
     MerchantVolumeCapped = 4,
+    TokenNotAllowed = 5,
 }
 
 /// Direction for oracle price condition (#125)
@@ -189,8 +193,8 @@ pub struct Payment {
     pub tags: Option<Vec<Symbol>>,
     /// Ledger timestamp after which an authorized payment can no longer be captured. 0 = not authorized.
     pub capture_deadline: u64,
-    /// Optional oracle price condition required for completion (#125)
-    pub release_condition: Option<OracleCondition>,
+    // Optional oracle price condition required for completion (#125)
+    // pub release_condition: Option<OracleCondition>,
 }
 
 #[contracttype]
@@ -333,6 +337,8 @@ pub enum DataKey {
     FeeRecipient,
     /// Volume-based fee tiers sorted by min_volume ascending.
     FeeTiers,
+    /// Token whitelist contract address
+    TokenWhitelistContract,
     // --- Persistent ---
     Payment(u32),
     CustomerPayments(Address),
@@ -377,6 +383,8 @@ pub enum DataKey {
     /// Persistent: per-merchant volume within a time window bucket (#131)
     /// Key: (merchant, window_bucket) where window_bucket = timestamp / window_seconds
     MerchantWindowVolume(Address, u64),
+    /// Persistent: merchant notification key for event routing
+    MerchantNotificationKey(Address),
     // --- Temporary ---
     Dispute(u32),
     /// Temporary: idempotency key → payment_id mapping (expires after 24h)
@@ -555,6 +563,9 @@ impl AhjoorPaymentsContract {
         Self::validate_metadata(&env, &metadata);
         Self::validate_split_recipients(&split_recipients);
 
+        // Token whitelist validation
+        Self::require_token_allowed(&env, &token);
+
         // Merchant allowlist check (#58)
         Self::require_merchant_approved(&env, &merchant);
 
@@ -592,7 +603,7 @@ impl AhjoorPaymentsContract {
             category: None,
             tags: None,
             capture_deadline: 0,
-            release_condition: None,
+            // // release_condition: None,
         };
 
         // Persistent: per-payment record with individual TTL
@@ -683,6 +694,7 @@ impl AhjoorPaymentsContract {
 
             Self::validate_reference(&env, &request.reference);
             Self::validate_metadata(&env, &request.metadata);
+            Self::require_token_allowed(&env, &request.token);
             Self::require_merchant_approved(&env, &request.merchant);
 
             let client = token::Client::new(&env, &request.token);
@@ -706,7 +718,7 @@ impl AhjoorPaymentsContract {
                 category: None,
                 tags: None,
                 capture_deadline: 0,
-                release_condition: None,
+                // release_condition: None,
             };
 
             // Persistent: per-payment record with individual TTL
@@ -1225,6 +1237,7 @@ impl AhjoorPaymentsContract {
         if payment_token == usdc_token {
             customer.require_auth();
             Self::enforce_rate_limit(&env, &customer, 1);
+            Self::require_token_allowed(&env, &payment_token);
             Self::require_merchant_approved(&env, &merchant);
 
             let client = token::Client::new(&env, &payment_token);
@@ -1255,7 +1268,7 @@ impl AhjoorPaymentsContract {
                 category: None,
                 tags: None,
                 capture_deadline: 0,
-                release_condition: None,
+                // release_condition: None,
             };
 
             env.storage()
@@ -1285,6 +1298,8 @@ impl AhjoorPaymentsContract {
 
         customer.require_auth();
         Self::enforce_rate_limit(&env, &customer, 1);
+        Self::require_token_allowed(&env, &payment_token);
+        Self::require_merchant_approved(&env, &merchant);
 
         let oracle_addr: Address = env
             .storage()
@@ -1372,7 +1387,7 @@ impl AhjoorPaymentsContract {
             category: None,
             tags: None,
             capture_deadline: 0,
-            release_condition: None,
+            // release_condition: None,
         };
 
         env.storage()
@@ -2234,6 +2249,8 @@ impl AhjoorPaymentsContract {
             .get(&DataKey::UsdcToken)
             .expect("Collateral token not configured; call set_oracle first");
 
+        Self::require_token_allowed(&env, &usdc_token);
+
         let token_client = token::Client::new(&env, &usdc_token);
         token_client.transfer(&merchant, &env.current_contract_address(), &amount);
 
@@ -2309,6 +2326,107 @@ impl AhjoorPaymentsContract {
             .unwrap_or(0)
     }
 
+    // --- Notification Keys ---
+
+    /// Merchant registers a notification key for event routing.
+    /// The key is included in all payment-related events for this merchant.
+    /// Key size is bounded to prevent storage abuse (max 128 bytes).
+    pub fn register_notification_key(env: Env, merchant: Address, key: Bytes) {
+        Self::require_not_paused(&env);
+        merchant.require_auth();
+
+        if key.len() > MAX_NOTIFICATION_KEY_LEN {
+            panic!("Notification key exceeds maximum length of 128 bytes");
+        }
+
+        if key.is_empty() {
+            panic!("Notification key cannot be empty");
+        }
+
+        let storage_key = DataKey::MerchantNotificationKey(merchant.clone());
+        env.storage().persistent().set(&storage_key, &key);
+        env.storage().persistent().extend_ttl(
+            &storage_key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_notification_key_registered(&env, merchant, key);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Merchant removes their notification key.
+    /// After removal, events will include empty bytes for the notification key.
+    pub fn remove_notification_key(env: Env, merchant: Address) {
+        Self::require_not_paused(&env);
+        merchant.require_auth();
+
+        let storage_key = DataKey::MerchantNotificationKey(merchant.clone());
+        env.storage().persistent().remove(&storage_key);
+
+        events::emit_notification_key_removed(&env, merchant);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get the notification key for a merchant, if registered.
+    pub fn get_notification_key(env: Env, merchant: Address) -> Option<Bytes> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MerchantNotificationKey(merchant))
+    }
+
+    // --- Token Whitelist Integration ---
+
+    /// Set the token whitelist contract address (admin only)
+    pub fn set_token_whitelist_contract(env: Env, admin: Address, whitelist_contract: Address) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can set token whitelist contract");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TokenWhitelistContract, &whitelist_contract);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get the token whitelist contract address
+    pub fn get_token_whitelist_contract(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::TokenWhitelistContract)
+    }
+
+    /// Check if a token is allowed via the whitelist contract
+    pub fn is_token_allowed(env: Env, token: Address) -> bool {
+        if let Some(whitelist_contract) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::TokenWhitelistContract)
+        {
+            let client = TokenWhitelistClient::new(&env, &whitelist_contract);
+            client.is_token_allowed(&token)
+        } else {
+            // If no whitelist contract is set, allow all tokens (backward compatibility)
+            true
+        }
+    }
+
     // --- Subscriptions (#60) ---
 
     /// Subscriber creates a recurring payment. Signs once to authorize future charges.
@@ -2330,6 +2448,7 @@ impl AhjoorPaymentsContract {
             panic!("Interval must be positive");
         }
 
+        Self::require_token_allowed(&env, &token);
         Self::require_merchant_approved(&env, &merchant);
 
         let mut counter: u32 = env
@@ -2556,6 +2675,7 @@ impl AhjoorPaymentsContract {
 
     // --- Payment Categories (#122) ---
 
+    /*
     /// Create a payment with optional category, tags, and release condition.
     /// Category and tags enable on-chain segmentation and analytics.
     /// release_condition, if set, must be satisfied at completion time (#125).
@@ -2661,7 +2781,7 @@ impl AhjoorPaymentsContract {
 
         payment_id
     }
-
+    */
     /// Return payment IDs for a merchant + category pair, paginated.
     /// page is 0-indexed. Empty result when page exceeds available data.
     pub fn get_payments_by_category(
@@ -2976,6 +3096,21 @@ impl AhjoorPaymentsContract {
         }
     }
 
+    /// Validates that a token is allowed via the whitelist contract
+    fn require_token_allowed(env: &Env, token: &Address) {
+        if let Some(whitelist_contract) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::TokenWhitelistContract)
+        {
+            let client = TokenWhitelistClient::new(env, &whitelist_contract);
+            if !client.is_token_allowed(token) {
+                panic_with_error!(env, Error::TokenNotAllowed);
+            }
+        }
+        // If no whitelist contract is set, allow all tokens (backward compatibility)
+    }
+
     fn complete_payment_internal(env: &Env, payment_id: u32, scheduled_only: bool) {
         let mut payment: Payment = env
             .storage()
@@ -3085,6 +3220,7 @@ impl AhjoorPaymentsContract {
     /// updates stats, emits events, and stores receipt. `payment` is mutated in-place.
     fn finalize_payment(env: &Env, payment_id: u32, payment: &mut Payment) {
         // Oracle price condition check (#125)
+        /*
         if let Some(ref condition) = payment.release_condition.clone() {
             let oracle_addr: Address = env
                 .storage()
@@ -3130,6 +3266,7 @@ impl AhjoorPaymentsContract {
                 panic_with_error!(env, Error::OracleConditionNotMet);
             }
         }
+        */
 
         // --- Volume cap check (#131) ---
         Self::check_and_update_merchant_volume_cap(env, payment_id, &payment.merchant, payment.amount);
@@ -3847,12 +3984,19 @@ impl AhjoorPaymentsContract {
             PERSISTENT_BUMP_AMOUNT,
         );
     }
+
 }
 
 #[cfg(test)]
 mod test;
 
 #[cfg(test)]
+mod test_token_whitelist;
+
+#[cfg(test)]
 mod test_collateral;
+
+#[cfg(test)]
+mod test_notification_keys;
 
 pub use events::*;

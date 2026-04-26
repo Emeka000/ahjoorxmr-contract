@@ -26,6 +26,7 @@ dependencies = [
 name = "ahjoor-payments"
 version = "0.1.0"
 dependencies = [
+ "ahjoor-token-whitelist",
  "proptest",
  "soroban-sdk",
 ]
@@ -44,6 +45,13 @@ name = "ahjoor-rosca"
 version = "0.1.0"
 dependencies = [
  "proptest",
+ "soroban-sdk",
+]
+
+[[package]]
+name = "ahjoor-token-whitelist"
+version = "0.1.0"
+dependencies = [
  "soroban-sdk",
 ]
 

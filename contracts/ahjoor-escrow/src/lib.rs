@@ -1,5 +1,6 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Vec};
+use ahjoor_token_whitelist::TokenWhitelistClient;
 
 // --- Storage TTL Constants ---
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_000;
@@ -24,6 +25,13 @@ pub enum EscrowStatus {
     Refunded = 4,
     PartiallyReleased = 5,
     PartiallyDisputed = 6,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[contracttype]
+pub enum DisputeDefaultWinner {
+    Buyer = 0,
+    Seller = 1,
 }
 
 const ORACLE_COMPARISON_LESS_OR_EQUAL: u32 = 0;
@@ -65,6 +73,7 @@ pub struct EscrowCreateRequest {
     pub release_comparison: Option<u32>,
     pub release_threshold_price: Option<i128>,
     pub arbiter_fee_bps: Option<u32>,
+    pub dispute_default_winner: Option<u32>, // 0 = Buyer, 1 = Seller
 }
 
 #[contracttype]
@@ -101,6 +110,8 @@ pub struct EscrowExtensions {
     pub release_threshold_price: Option<i128>,
     /// Optional per-escrow arbiter fee override in basis points.
     pub arbiter_fee_bps: Option<u32>,
+    /// Optional per-escrow default winner override for dispute timeout (0 = Buyer, 1 = Seller).
+    pub dispute_default_winner: Option<u32>,
 }
 
 #[contracttype]
@@ -195,6 +206,14 @@ pub enum DataKey {
     InsuranceClaimed(u32),
     /// Last timestamp of any buyer action for inactivity tracking (#150)
     LastBuyerAction(u32),
+    /// Global default winner for dispute timeouts (Buyer or Seller)
+    DefaultDisputeWinner,
+    /// Timestamp when dispute was raised and arbiter assigned
+    DisputeDeadlineStart(u32),
+    /// Counter tracking arbiter timeout occurrences per arbiter
+    ArbiterTimeoutCount(Address),
+    /// Token whitelist contract address
+    TokenWhitelistContract,
 }
 
 const MAX_PROTOCOL_FEE_BPS: u32 = 200; // 2%
@@ -239,6 +258,9 @@ impl AhjoorEscrowContract {
         env.storage()
             .instance()
             .set(&DataKey::MaxOracleAge, &DEFAULT_MAX_ORACLE_AGE_SECONDS);
+        env.storage()
+            .instance()
+            .set(&DataKey::DefaultDisputeWinner, &DisputeDefaultWinner::Buyer);
 
         env.storage()
             .instance()
@@ -280,6 +302,7 @@ impl AhjoorEscrowContract {
             release_comparison: None,
             release_threshold_price: None,
             arbiter_fee_bps: None,
+            dispute_default_winner: None,
         };
 
         Self::create_escrow_core(&env, &buyer, request)
@@ -321,6 +344,7 @@ impl AhjoorEscrowContract {
             release_comparison: None,
             release_threshold_price: None,
             arbiter_fee_bps: None,
+            dispute_default_winner: None,
         };
 
         Self::create_escrow_core(&env, &buyer, request)
@@ -377,6 +401,7 @@ impl AhjoorEscrowContract {
                     release_comparison: None,
                     release_threshold_price: None,
                     arbiter_fee_bps: None,
+                    dispute_default_winner: None,
                 },
             );
 
@@ -415,6 +440,7 @@ impl AhjoorEscrowContract {
             release_comparison,
             release_threshold_price,
             arbiter_fee_bps,
+            dispute_default_winner,
         } = request;
 
         if amount <= 0 {
@@ -462,6 +488,9 @@ impl AhjoorEscrowContract {
                 panic!("Invalid release comparison");
             }
         }
+
+        // Token whitelist validation
+        Self::require_token_allowed(&env, &token);
 
         let is_allowed = env
             .storage()
@@ -532,6 +561,7 @@ impl AhjoorEscrowContract {
                 release_comparison,
                 release_threshold_price,
                 arbiter_fee_bps,
+                dispute_default_winner,
             },
         };
 
@@ -989,6 +1019,17 @@ impl AhjoorEscrowContract {
             PERSISTENT_BUMP_AMOUNT,
         );
 
+        // Record dispute deadline start timestamp for timeout tracking
+        let now = env.ledger().timestamp();
+        env.storage()
+            .persistent()
+            .set(&DataKey::DisputeDeadlineStart(escrow_id), &now);
+        env.storage().persistent().extend_ttl(
+            &DataKey::DisputeDeadlineStart(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
         if released_amount > 0 {
             events::emit_partial_dispute_raised(&env, escrow_id, dispute_amount, released_amount);
         } else {
@@ -1164,6 +1205,175 @@ impl AhjoorEscrowContract {
             .unwrap_or(DEFAULT_DISPUTE_TIMEOUT_SECONDS)
     }
 
+    /// Set the global default winner for dispute timeouts. Admin only.
+    pub fn set_default_dispute_winner(env: Env, admin: Address, winner: DisputeDefaultWinner) {
+        Self::require_admin(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::DefaultDisputeWinner, &winner);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    pub fn get_default_dispute_winner(env: Env) -> DisputeDefaultWinner {
+        env.storage()
+            .instance()
+            .get(&DataKey::DefaultDisputeWinner)
+            .unwrap_or(DisputeDefaultWinner::Buyer)
+    }
+
+    /// Enforce dispute timeout: release funds to default winner if arbiter fails to resolve within deadline.
+    /// Can be called by anyone after the deadline has passed.
+    pub fn enforce_dispute_timeout(env: Env, escrow_id: u32) {
+        Self::require_not_paused(&env);
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        // Check if there's a dispute record first
+        let dispute: Option<Dispute> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Dispute(escrow_id));
+
+        let dispute = match dispute {
+            Some(d) => d,
+            None => panic!("Escrow is not disputed"),
+        };
+
+        if dispute.resolved {
+            panic!("Dispute already resolved");
+        }
+
+        if escrow.status != EscrowStatus::Disputed
+            && escrow.status != EscrowStatus::PartiallyDisputed
+        {
+            panic!("Escrow is not disputed");
+        }
+
+        // Get dispute deadline start timestamp
+        let deadline_start: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DisputeDeadlineStart(escrow_id))
+            .expect("Dispute deadline start not found");
+
+        // Determine effective timeout
+        let default_timeout: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::DefaultDisputeTimeout)
+            .unwrap_or(DEFAULT_DISPUTE_TIMEOUT_SECONDS);
+        let effective_timeout = dispute.timeout_seconds.unwrap_or(default_timeout);
+
+        // Check if deadline has passed
+        let now = env.ledger().timestamp();
+        let elapsed = now.saturating_sub(deadline_start);
+        if elapsed < effective_timeout {
+            panic!("Dispute timeout deadline has not passed yet");
+        }
+
+        // Determine default winner
+        let default_winner_u32 = escrow
+            .extensions
+            .dispute_default_winner
+            .unwrap_or_else(|| {
+                let stored_winner: DisputeDefaultWinner = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::DefaultDisputeWinner)
+                    .unwrap_or(DisputeDefaultWinner::Buyer);
+                stored_winner as u32
+            });
+
+        let default_winner_enum = match default_winner_u32 {
+            0 => DisputeDefaultWinner::Buyer,
+            1 => DisputeDefaultWinner::Seller,
+            _ => DisputeDefaultWinner::Buyer,
+        };
+
+        // Increment arbiter timeout counter
+        let arbiter_timeout_count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ArbiterTimeoutCount(escrow.arbiter.clone()))
+            .unwrap_or(0);
+        env.storage().persistent().set(
+            &DataKey::ArbiterTimeoutCount(escrow.arbiter.clone()),
+            &(arbiter_timeout_count + 1),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::ArbiterTimeoutCount(escrow.arbiter.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        // Release funds to default winner
+        let client = token::Client::new(&env, &escrow.token);
+        let release_to_seller = matches!(default_winner_enum, DisputeDefaultWinner::Seller);
+
+        if release_to_seller {
+            client.transfer(
+                &env.current_contract_address(),
+                &escrow.seller,
+                &escrow.amount,
+            );
+            escrow.status = EscrowStatus::Released;
+        } else {
+            client.transfer(
+                &env.current_contract_address(),
+                &escrow.buyer,
+                &escrow.amount,
+            );
+            escrow.status = EscrowStatus::Refunded;
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Escrow(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        // Mark dispute as resolved
+        let mut resolved_dispute = dispute;
+        resolved_dispute.resolved = true;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Dispute(escrow_id), &resolved_dispute);
+
+        events::emit_dispute_timed_out(
+            &env,
+            escrow_id,
+            escrow.arbiter.clone(),
+            default_winner_enum,
+            elapsed,
+        );
+        events::emit_arbiter_timeout_penalty_applied(
+            &env,
+            escrow.arbiter,
+            arbiter_timeout_count + 1,
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get arbiter timeout count for reputation tracking.
+    pub fn get_arbiter_timeout_count(env: Env, arbiter: Address) -> u32 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ArbiterTimeoutCount(arbiter))
+            .unwrap_or(0)
+    }
+
     /// Set the protocol-wide default arbiter fee (bps). Admin only.
     /// Fee cap is 1000 bps (10%).
     pub fn set_default_arbiter_fee_bps(env: Env, admin: Address, fee_bps: u32) {
@@ -1223,6 +1433,9 @@ impl AhjoorEscrowContract {
         if trigger_days == 0 {
             panic!("insurance_trigger_days must be positive");
         }
+
+        // Token whitelist validation
+        Self::require_token_allowed(&env, &token);
 
         let is_allowed = env
             .storage()
@@ -1869,6 +2082,53 @@ impl AhjoorEscrowContract {
         Self::get_or_init_version(&env)
     }
 
+    // --- Token Whitelist Integration ---
+
+    /// Set the token whitelist contract address (admin only)
+    pub fn set_token_whitelist_contract(env: Env, admin: Address, whitelist_contract: Address) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can set token whitelist contract");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TokenWhitelistContract, &whitelist_contract);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get the token whitelist contract address
+    pub fn get_token_whitelist_contract(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::TokenWhitelistContract)
+    }
+
+    /// Check if a token is allowed via the whitelist contract
+    pub fn is_token_allowed(env: Env, token: Address) -> bool {
+        if let Some(whitelist_contract) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::TokenWhitelistContract)
+        {
+            let client = TokenWhitelistClient::new(&env, &whitelist_contract);
+            client.is_token_allowed(&token)
+        } else {
+            // If no whitelist contract is set, allow all tokens (backward compatibility)
+            true
+        }
+    }
+
     pub fn pause_contract(env: Env, admin: Address, reason: String) {
         Self::require_or_bootstrap_admin(&env, &admin);
 
@@ -2044,6 +2304,7 @@ impl AhjoorEscrowContract {
                 release_comparison: None,
                 release_threshold_price: None,
                 arbiter_fee_bps: None,
+                dispute_default_winner: None,
             },
         };
 
@@ -2231,6 +2492,7 @@ impl AhjoorEscrowContract {
                 release_comparison: None,
                 release_threshold_price: None,
                 arbiter_fee_bps: None,
+                dispute_default_winner: None,
             },
         };
 
@@ -2450,6 +2712,21 @@ impl AhjoorEscrowContract {
         }
     }
 
+    /// Validates that a token is allowed via the whitelist contract
+    fn require_token_allowed(env: &Env, token: &Address) {
+        if let Some(whitelist_contract) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::TokenWhitelistContract)
+        {
+            let client = TokenWhitelistClient::new(env, &whitelist_contract);
+            if !client.is_token_allowed(token) {
+                panic!("TokenNotAllowed");
+            }
+        }
+        // If no whitelist contract is set, allow all tokens (backward compatibility)
+    }
+
     fn require_unlocked(env: &Env, escrow: &Escrow) {
         if let Some(lock_until) = escrow.extensions.min_lock_until {
             if env.ledger().timestamp() < lock_until {
@@ -2612,6 +2889,7 @@ impl AhjoorEscrowContract {
                 release_comparison: source.extensions.release_comparison,
                 release_threshold_price: source.extensions.release_threshold_price,
                 arbiter_fee_bps: source.extensions.arbiter_fee_bps,
+                dispute_default_winner: source.extensions.dispute_default_winner,
             },
         };
 
@@ -2685,3 +2963,9 @@ impl AhjoorEscrowContract {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod test_dispute_timeout;
+
+#[cfg(test)]
+mod test_token_whitelist;

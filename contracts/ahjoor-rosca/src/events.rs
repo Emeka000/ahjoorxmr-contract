@@ -804,3 +804,41 @@ pub fn emit_insurance_paid_out(e: &Env, round: u32, shortfall: i128, remaining_p
 pub fn emit_round_skip_requested(e: &Env, member: Address, round: u32, fee_paid: i128) {
     RoundSkipRequested { member, round, fee_paid }.publish(e);
 }
+
+// --- Audit Trail Events ---
+
+/// Event: Cycle record created
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct CycleRecordCreated {
+    pub cycle_number: u32,
+    pub total_pool_amount: i128,
+    pub payout_recipient: Address,
+}
+
+/// Event: Cycle record archived
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct CycleRecordArchived {
+    pub cycle_number: u32,
+}
+
+/// Event: Retention window updated
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct RetentionWindowUpdated {
+    pub old_window: u32,
+    pub new_window: u32,
+}
+
+pub fn emit_cycle_record_created(e: &Env, cycle_number: u32, total_pool_amount: i128, payout_recipient: Address) {
+    CycleRecordCreated { cycle_number, total_pool_amount, payout_recipient }.publish(e);
+}
+
+pub fn emit_cycle_record_archived(e: &Env, cycle_number: u32) {
+    CycleRecordArchived { cycle_number }.publish(e);
+}
+
+pub fn emit_retention_window_updated(e: &Env, old_window: u32, new_window: u32) {
+    RetentionWindowUpdated { old_window, new_window }.publish(e);
+}

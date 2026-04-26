@@ -635,3 +635,47 @@ pub fn emit_inactivity_release_triggered(
     }
     .publish(e);
 }
+
+// --- Issue #151: Dispute Timeout Mechanism ---
+
+/// Event: Dispute timed out and funds released to default winner
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct DisputeTimedOut {
+    pub escrow_id: u32,
+    pub arbiter: Address,
+    pub default_winner: u32, // 0 = Buyer, 1 = Seller
+    pub elapsed_seconds: u64,
+}
+
+/// Event: Arbiter timeout penalty applied
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ArbiterTimeoutPenaltyApplied {
+    pub arbiter: Address,
+    pub total_timeouts: u32,
+}
+
+pub fn emit_dispute_timed_out(
+    e: &Env,
+    escrow_id: u32,
+    arbiter: Address,
+    default_winner: crate::DisputeDefaultWinner,
+    elapsed_seconds: u64,
+) {
+    DisputeTimedOut {
+        escrow_id,
+        arbiter,
+        default_winner: default_winner as u32,
+        elapsed_seconds,
+    }
+    .publish(e);
+}
+
+pub fn emit_arbiter_timeout_penalty_applied(e: &Env, arbiter: Address, total_timeouts: u32) {
+    ArbiterTimeoutPenaltyApplied {
+        arbiter,
+        total_timeouts,
+    }
+    .publish(e);
+}

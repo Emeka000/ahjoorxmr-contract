@@ -1,5 +1,6 @@
 #![no_std]
 use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Vec};
+use ahjoor_token_whitelist::TokenWhitelistClient;
 
 // --- Storage TTL Constants ---
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_000;
@@ -156,6 +157,8 @@ pub enum DataKey {
     MerchantDelegates(Address),
     /// Window in seconds during which a customer can cancel their own request (#168)
     CustomerCancelWindow,
+    /// Token whitelist contract address
+    TokenWhitelistContract,
 }
 
 mod events;
@@ -419,6 +422,9 @@ impl AhjoorRefundContract {
 
         // Cache validated payment data — token comes from the payment record
         let token = payment.token.clone();
+
+        // Token whitelist validation
+        Self::require_token_allowed(&env, &token);
 
         // Escrow funds to this contract so approved refunds can be processed.
         let client = token::Client::new(&env, &token);
@@ -705,6 +711,9 @@ impl AhjoorRefundContract {
         if amount > remaining {
             panic!("MerchantBalanceInsufficient");
         }
+
+        // Token whitelist validation
+        Self::require_token_allowed(&env, &payment.token);
 
         let token_client = token::Client::new(&env, &payment.token);
         token_client.transfer(&merchant, &payment.customer, &amount);
@@ -1890,6 +1899,53 @@ impl AhjoorRefundContract {
         Self::get_or_init_version(&env)
     }
 
+    // --- Token Whitelist Integration ---
+
+    /// Set the token whitelist contract address (admin only)
+    pub fn set_token_whitelist_contract(env: Env, admin: Address, whitelist_contract: Address) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can set token whitelist contract");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TokenWhitelistContract, &whitelist_contract);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get the token whitelist contract address
+    pub fn get_token_whitelist_contract(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey::TokenWhitelistContract)
+    }
+
+    /// Check if a token is allowed via the whitelist contract
+    pub fn is_token_allowed(env: Env, token: Address) -> bool {
+        if let Some(whitelist_contract) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::TokenWhitelistContract)
+        {
+            let client = TokenWhitelistClient::new(&env, &whitelist_contract);
+            client.is_token_allowed(&token)
+        } else {
+            // If no whitelist contract is set, allow all tokens (backward compatibility)
+            true
+        }
+    }
+
     pub fn pause_contract(env: Env, admin: Address, reason: String) {
         Self::require_admin(&env, &admin);
 
@@ -1953,6 +2009,21 @@ impl AhjoorRefundContract {
         if stored_admin != *admin {
             panic!("Only admin can manage pause state");
         }
+    }
+
+    /// Validates that a token is allowed via the whitelist contract
+    fn require_token_allowed(env: &Env, token: &Address) {
+        if let Some(whitelist_contract) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::TokenWhitelistContract)
+        {
+            let client = TokenWhitelistClient::new(env, &whitelist_contract);
+            if !client.is_token_allowed(token) {
+                panic!("TokenNotAllowed");
+            }
+        }
+        // If no whitelist contract is set, allow all tokens (backward compatibility)
     }
 
     fn append_index(env: &Env, key: &DataKey, refund_id: u32) {
@@ -2284,3 +2355,6 @@ impl AhjoorRefundContract {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod test_token_whitelist;

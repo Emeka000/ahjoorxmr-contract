@@ -1,0 +1,34 @@
+[package]
+name = "ahjoor-token-whitelist"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[dependencies]
+soroban-sdk = "23.5.2"
+
+[dev-dependencies]
+soroban-sdk = { version = "23.5.2", features = ["testutils"] }
+
+[features]
+testutils = ["soroban-sdk/testutils"]
+
+[[bin]]
+name = "ahjoor-token-whitelist"
+path = "src/bin/ahjoor-token-whitelist.rs"
+
+[profile.release]
+opt-level = "z"
+overflow-checks = true
+debug = 0
+strip = "symbols"
+debug-assertions = false
+panic = "abort"
+codegen-units = 1
+lto = true
+
+[profile.release-with-logs]
+inherits = "release"
+debug-assertions = true

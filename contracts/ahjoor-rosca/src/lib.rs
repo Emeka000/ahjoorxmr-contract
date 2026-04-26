@@ -2,6 +2,7 @@
 use soroban_sdk::{
     contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Map, Symbol, Vec,
 };
+use ahjoor_token_whitelist::TokenWhitelistClient;
 
 // Instance storage: config, counters, and active round state (bounded, shared TTL)
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_000;
@@ -23,11 +24,13 @@ pub use types::*;
 mod errors;
 mod events;
 mod internals;
+mod audit_trail;
 mod test_tiers;
 mod test_weighted_voting;
 mod test_reinvest;
+mod test_token_whitelist;
 
-use errors::Error;
+use crate::errors::{Error, ExtError};
 
 #[contract]
 pub struct AhjoorContract;
@@ -75,6 +78,9 @@ impl AhjoorContract {
         if !approved_tokens.is_empty() && !approved_tokens.contains(&token) {
             panic_with_error!(&env, Error::TokenNotApproved);
         }
+
+        // Token whitelist validation for base token
+        Self::require_token_allowed(&env, &token);
 
         let resolved_order = match config.strategy {
             PayoutStrategy::RoundRobin => members.clone(),
@@ -152,9 +158,9 @@ impl AhjoorContract {
         // Persistent: RoundHistory grows by one record per round — must not share instance TTL
         env.storage()
             .persistent()
-            .set(&DataKey::RoundHistory, &Vec::<PayoutRecord>::new(&env));
+            .set(&PersistentKey::RoundHistory, &Vec::<PayoutRecord>::new(&env));
         env.storage().persistent().extend_ttl(
-            &DataKey::RoundHistory,
+            &PersistentKey::RoundHistory,
             PERSISTENT_LIFETIME_THRESHOLD,
             PERSISTENT_BUMP_AMOUNT,
         );
@@ -181,11 +187,11 @@ impl AhjoorContract {
             .set(&DataKey::ExitPenaltyBps, &config.exit_penalty_bps);
         // Temporary: ExitRequests are short-lived pending-admin state — auto-expire when unused
         env.storage().temporary().set(
-            &DataKey::ExitRequests,
+            &DataKey2::ExitRequests,
             &Map::<Address, ExitRequest>::new(&env),
         );
         env.storage().temporary().extend_ttl(
-            &DataKey::ExitRequests,
+            &DataKey2::ExitRequests,
             TEMP_LIFETIME_THRESHOLD,
             TEMP_BUMP_AMOUNT,
         );
@@ -257,26 +263,26 @@ impl AhjoorContract {
         // Skip Functionality Initialization
         env.storage()
             .instance()
-            .set(&DataKey::SkipFee, &config.skip_fee);
+            .set(&DataKey2::SkipFee, &config.skip_fee);
         env.storage()
             .instance()
-            .set(&DataKey::MaxSkipsPerCycle, &config.max_skips_per_cycle);
+            .set(&DataKey2::MaxSkipsPerCycle, &config.max_skips_per_cycle);
         env.storage()
             .instance()
-            .set(&DataKey::SkipRequests, &Map::<(Address, u32), bool>::new(&env));
+            .set(&DataKey2::SkipRequests, &Map::<(Address, u32), bool>::new(&env));
         env.storage()
             .instance()
-            .set(&DataKey::MemberSkips, &Map::<(Address, u32), u32>::new(&env));
+            .set(&DataKey2::MemberSkips, &Map::<(Address, u32), u32>::new(&env));
 
         // Voting Mode Initialization
         env.storage()
             .instance()
-            .set(&DataKey::VotingMode, &config.voting_mode);
+            .set(&DataKey2::VotingMode, &config.voting_mode);
 
         // Reinvestment Initialization
         env.storage()
             .instance()
-            .set(&DataKey::ReinvestPreference, &Map::<Address, bool>::new(&env));
+            .set(&DataKey2::ReinvestPreference, &Map::<Address, bool>::new(&env));
 
         // Governance Initialization
         env.storage()
@@ -410,6 +416,53 @@ impl AhjoorContract {
         Self::get_or_init_version(&env)
     }
 
+    // --- Token Whitelist Integration ---
+
+    /// Set the token whitelist contract address (admin only)
+    pub fn set_token_whitelist_contract(env: Env, admin: Address, whitelist_contract: Address) {
+        internals::check_not_paused(&env);
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can set token whitelist contract");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey2::TokenWhitelistContract, &whitelist_contract);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get the token whitelist contract address
+    pub fn get_token_whitelist_contract(env: Env) -> Option<Address> {
+        env.storage()
+            .instance()
+            .get(&DataKey2::TokenWhitelistContract)
+    }
+
+    /// Check if a token is allowed via the whitelist contract
+    pub fn is_token_allowed(env: Env, token: Address) -> bool {
+        if let Some(whitelist_contract) = env
+            .storage()
+            .instance()
+            .get::<DataKey2, Address>(&DataKey2::TokenWhitelistContract)
+        {
+            let client = TokenWhitelistClient::new(&env, &whitelist_contract);
+            client.is_token_allowed(&token)
+        } else {
+            // If no whitelist contract is set, allow all tokens (backward compatibility)
+            true
+        }
+    }
+
     /// Set the contribution tier for a member. Tier changes take effect in the next round.
     pub fn set_member_tier(env: Env, admin: Address, member: Address, tier_bps: u32) {
         admin.require_auth();
@@ -424,7 +477,7 @@ impl AhjoorContract {
         }
 
         if tier_bps == 0 {
-            panic_with_error!(&env, Error::InvalidTier);
+            panic_with_error!(&env, ExtError::InvalidTier);
         }
 
         let members: Vec<Address> = env
@@ -457,7 +510,7 @@ impl AhjoorContract {
         contributor.require_auth();
 
         if amount <= 0 {
-            panic_with_error!(&env, Error::InvalidInsuranceContribution);
+            panic_with_error!(&env, ExtError::InvalidInsuranceContribution);
         }
 
         let members: Vec<Address> = env
@@ -487,6 +540,9 @@ impl AhjoorContract {
             panic_with_error!(&env, Error::TokenNotApproved);
         }
 
+        // Token whitelist validation
+        Self::require_token_allowed(&env, &token);
+
         let client = token::Client::new(&env, &token);
         client.transfer(
             &contributor,
@@ -497,12 +553,12 @@ impl AhjoorContract {
         let mut insurance_pool: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::InsurancePool)
+            .get(&DataKey2::InsurancePool)
             .unwrap_or(0);
         insurance_pool += amount;
         env.storage()
             .instance()
-            .set(&DataKey::InsurancePool, &insurance_pool);
+            .set(&DataKey2::InsurancePool, &insurance_pool);
 
         events::emit_insurance_top_up(&env, contributor, amount);
 
@@ -514,7 +570,7 @@ impl AhjoorContract {
     pub fn get_insurance_pool(env: Env) -> i128 {
         env.storage()
             .instance()
-            .get(&DataKey::InsurancePool)
+            .get(&DataKey2::InsurancePool)
             .unwrap_or(0)
     }
 
@@ -537,6 +593,21 @@ impl AhjoorContract {
                 .set(&DataKey::ContractVersion, &initial_version);
             initial_version
         }
+    }
+
+    /// Validates that a token is allowed via the whitelist contract
+    fn require_token_allowed(env: &Env, token: &Address) {
+        if let Some(whitelist_contract) = env
+            .storage()
+            .instance()
+            .get::<DataKey2, Address>(&DataKey2::TokenWhitelistContract)
+        {
+            let client = TokenWhitelistClient::new(env, &whitelist_contract);
+            if !client.is_token_allowed(token) {
+                panic_with_error!(env, Error::TokenNotApproved);
+            }
+        }
+        // If no whitelist contract is set, allow all tokens (backward compatibility)
     }
 
     pub fn contribute(env: Env, contributor: Address, token: Address, amount: i128) {
@@ -606,6 +677,9 @@ impl AhjoorContract {
             panic_with_error!(&env, Error::TokenNotApproved);
         }
 
+        // Token whitelist validation
+        Self::require_token_allowed(&env, &token);
+
         let base_token: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let base_amount: i128 = env
             .storage()
@@ -655,7 +729,7 @@ impl AhjoorContract {
         let insurance_bps: u32 = env
             .storage()
             .instance()
-            .get(&DataKey::InsuranceContributionBps)
+            .get(&DataKey2::InsuranceContributionBps)
             .unwrap_or(0);
         let insurance_deduction = if insurance_bps > 0 {
             (amount_to_transfer * insurance_bps as i128) / 10_000
@@ -676,12 +750,12 @@ impl AhjoorContract {
             let mut insurance_pool: i128 = env
                 .storage()
                 .instance()
-                .get(&DataKey::InsurancePool)
+                .get(&DataKey2::InsurancePool)
                 .unwrap_or(0);
             insurance_pool += insurance_deduction;
             env.storage()
                 .instance()
-                .set(&DataKey::InsurancePool, &insurance_pool);
+                .set(&DataKey2::InsurancePool, &insurance_pool);
             events::emit_insurance_top_up(&env, contributor.clone(), insurance_deduction);
         }
 
@@ -887,11 +961,11 @@ impl AhjoorContract {
         let mut skip_requests: Map<(Address, u32), bool> = env
             .storage()
             .instance()
-            .get(&DataKey::SkipRequests)
+            .get(&DataKey2::SkipRequests)
             .unwrap_or(Map::new(&env));
 
         if skip_requests.get((member.clone(), round)).unwrap_or(false) {
-            panic_with_error!(&env, Error::AlreadySkipped);
+            panic_with_error!(&env, ExtError::AlreadySkipped);
         }
 
         // Check if already contributed this round
@@ -915,24 +989,24 @@ impl AhjoorContract {
         let max_skips: u32 = env
             .storage()
             .instance()
-            .get(&DataKey::MaxSkipsPerCycle)
+            .get(&DataKey2::MaxSkipsPerCycle)
             .unwrap_or(0);
 
         let mut member_skips: Map<(Address, u32), u32> = env
             .storage()
             .instance()
-            .get(&DataKey::MemberSkips)
+            .get(&DataKey2::MemberSkips)
             .unwrap_or(Map::new(&env));
 
         let current_skips = member_skips.get((member.clone(), cycle_index)).unwrap_or(0);
         if current_skips >= max_skips {
-            panic_with_error!(&env, Error::SkipLimitReached);
+            panic_with_error!(&env, ExtError::SkipLimitReached);
         }
 
         let skip_fee: i128 = env
             .storage()
             .instance()
-            .get(&DataKey::SkipFee)
+            .get(&DataKey2::SkipFee)
             .unwrap_or(0);
 
         if skip_fee > 0 {
@@ -946,10 +1020,10 @@ impl AhjoorContract {
 
         env.storage()
             .instance()
-            .set(&DataKey::SkipRequests, &skip_requests);
+            .set(&DataKey2::SkipRequests, &skip_requests);
         env.storage()
             .instance()
-            .set(&DataKey::MemberSkips, &member_skips);
+            .set(&DataKey2::MemberSkips, &member_skips);
 
         events::emit_round_skip_requested(&env, member, round, skip_fee);
 
@@ -1000,7 +1074,7 @@ impl AhjoorContract {
         let skip_requests: Map<(Address, u32), bool> = env
             .storage()
             .instance()
-            .get(&DataKey::SkipRequests)
+            .get(&DataKey2::SkipRequests)
             .unwrap_or(Map::new(&env));
 
         let current_round: u32 = env
@@ -1102,7 +1176,7 @@ impl AhjoorContract {
         let skip_requests: Map<(Address, u32), bool> = env
             .storage()
             .instance()
-            .get(&DataKey::SkipRequests)
+            .get(&DataKey2::SkipRequests)
             .unwrap_or(Map::new(&env));
 
         // Identify defaulters (non-contributors, non-exited, non-skippers)
@@ -1639,7 +1713,7 @@ impl AhjoorContract {
         let quorum_config: Map<ProposalType, u32> = env
             .storage()
             .instance()
-            .get(&DataKey::QuorumConfig)
+            .get(&DataKey2::QuorumConfig)
             .unwrap_or(Map::new(&env));
 
         let required_quorum = if let Some(q) = quorum_config.get(proposal_type) {
@@ -1710,7 +1784,7 @@ impl AhjoorContract {
         let voting_mode: VotingMode = env
             .storage()
             .instance()
-            .get(&DataKey::VotingMode)
+            .get(&DataKey2::VotingMode)
             .unwrap_or(VotingMode::Equal);
 
         match voting_mode {
@@ -1766,13 +1840,13 @@ impl AhjoorContract {
         let mut preferences: Map<Address, bool> = env
             .storage()
             .instance()
-            .get(&DataKey::ReinvestPreference)
+            .get(&DataKey2::ReinvestPreference)
             .unwrap_or(Map::new(&env));
 
         preferences.set(member, reinvest);
         env.storage()
             .instance()
-            .set(&DataKey::ReinvestPreference, &preferences);
+            .set(&DataKey2::ReinvestPreference, &preferences);
 
         env.storage()
              .instance()
@@ -1783,7 +1857,7 @@ impl AhjoorContract {
         let preferences: Map<Address, bool> = env
             .storage()
             .instance()
-            .get(&DataKey::ReinvestPreference)
+            .get(&DataKey2::ReinvestPreference)
             .unwrap_or(Map::new(&env));
         preferences.get(member).unwrap_or(false)
     }
@@ -1845,9 +1919,9 @@ impl AhjoorContract {
 
         let voter_weight = Self::get_member_voting_weight(env.clone(), voter.clone());
         if voter_weight == 0 {
-            let voting_mode: VotingMode = env.storage().instance().get(&DataKey::VotingMode).unwrap_or(VotingMode::Equal);
+            let voting_mode: VotingMode = env.storage().instance().get(&DataKey2::VotingMode).unwrap_or(VotingMode::Equal);
             if voting_mode == VotingMode::WeightedByContributions {
-                panic_with_error!(&env, Error::InsufficientWeight);
+                panic_with_error!(&env, ExtError::InsufficientWeight);
             }
         }
 
@@ -1892,7 +1966,7 @@ impl AhjoorContract {
         let voting_mode: VotingMode = env
             .storage()
             .instance()
-            .get(&DataKey::VotingMode)
+            .get(&DataKey2::VotingMode)
             .unwrap_or(VotingMode::Equal);
         
         if voting_mode == VotingMode::WeightedByContributions {
@@ -1938,7 +2012,7 @@ impl AhjoorContract {
         let voting_mode: VotingMode = env
             .storage()
             .instance()
-            .get(&DataKey::VotingMode)
+            .get(&DataKey2::VotingMode)
             .unwrap_or(VotingMode::Equal);
 
         let total_votes = proposal.votes_for + proposal.votes_against;
@@ -2051,13 +2125,13 @@ impl AhjoorContract {
         let mut quorum_config: Map<ProposalType, u32> = env
             .storage()
             .instance()
-            .get(&DataKey::QuorumConfig)
+            .get(&DataKey2::QuorumConfig)
             .unwrap_or(Map::new(&env));
 
         quorum_config.set(proposal_type, quorum_bps);
         env.storage()
             .instance()
-            .set(&DataKey::QuorumConfig, &quorum_config);
+            .set(&DataKey2::QuorumConfig, &quorum_config);
 
         events::emit_quorum_config_updated(&env, proposal_type, quorum_bps);
 
@@ -2203,7 +2277,7 @@ impl AhjoorContract {
     pub fn get_round_history(env: Env) -> Vec<PayoutRecord> {
         env.storage()
             .persistent()
-            .get(&DataKey::RoundHistory)
+            .get(&PersistentKey::RoundHistory)
             .unwrap_or(Vec::new(&env))
     }
 
@@ -2735,7 +2809,7 @@ impl AhjoorContract {
         let mut requests: Map<Address, ExitRequest> = env
             .storage()
             .temporary()
-            .get(&DataKey::ExitRequests)
+            .get(&DataKey2::ExitRequests)
             .unwrap_or(Map::new(&env));
         if requests.contains_key(member.clone()) {
             panic_with_error!(&env, Error::ExitRequestPending);
@@ -2758,9 +2832,9 @@ impl AhjoorContract {
         requests.set(member.clone(), request);
         env.storage()
             .temporary()
-            .set(&DataKey::ExitRequests, &requests);
+            .set(&DataKey2::ExitRequests, &requests);
         env.storage().temporary().extend_ttl(
-            &DataKey::ExitRequests,
+            &DataKey2::ExitRequests,
             TEMP_LIFETIME_THRESHOLD,
             TEMP_BUMP_AMOUNT,
         );
@@ -2784,7 +2858,7 @@ impl AhjoorContract {
         let mut requests: Map<Address, ExitRequest> = env
             .storage()
             .temporary()
-            .get(&DataKey::ExitRequests)
+            .get(&DataKey2::ExitRequests)
             .unwrap_or(Map::new(&env));
         if !requests.contains_key(member.clone()) {
             panic_with_error!(&env, Error::NoExitRequestFound);
@@ -2810,7 +2884,7 @@ impl AhjoorContract {
         let history: Vec<PayoutRecord> = env
             .storage()
             .persistent()
-            .get(&DataKey::RoundHistory)
+            .get(&PersistentKey::RoundHistory)
             .unwrap_or(Vec::new(&env));
         let mut received_payout = 0i128;
         for record in history.iter() {
@@ -2859,7 +2933,7 @@ impl AhjoorContract {
         requests.remove(member.clone());
         env.storage()
             .temporary()
-            .set(&DataKey::ExitRequests, &requests);
+            .set(&DataKey2::ExitRequests, &requests);
 
         events::emit_exit_ok(&env, member.clone(), refund_amount);
 
@@ -2880,7 +2954,7 @@ impl AhjoorContract {
         let mut requests: Map<Address, ExitRequest> = env
             .storage()
             .temporary()
-            .get(&DataKey::ExitRequests)
+            .get(&DataKey2::ExitRequests)
             .unwrap_or(Map::new(&env));
         if !requests.contains_key(member.clone()) {
             panic_with_error!(&env, Error::NoExitRequestFound);
@@ -2889,7 +2963,7 @@ impl AhjoorContract {
         requests.remove(member.clone());
         env.storage()
             .temporary()
-            .set(&DataKey::ExitRequests, &requests);
+            .set(&DataKey2::ExitRequests, &requests);
 
         events::emit_exit_no(&env, member.clone());
 
@@ -2901,7 +2975,7 @@ impl AhjoorContract {
     pub fn get_exit_requests(env: Env) -> Map<Address, ExitRequest> {
         env.storage()
             .temporary()
-            .get(&DataKey::ExitRequests)
+            .get(&DataKey2::ExitRequests)
             .unwrap_or(Map::new(&env))
     }
 

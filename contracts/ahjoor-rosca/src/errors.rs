@@ -71,6 +71,13 @@ pub enum Error {
     InsufficientApprovals = 49,
     /// Not a co-admin.
     NotACoAdmin = 50,
+}
+
+/// Extension error codes 51-56 — split from Error because #[contracterror]
+/// is bounded by the soroban XDR 50-case limit.
+#[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExtError {
     /// Tier must be at least 1 bps.
     InvalidTier = 51,
     /// Insurance pool balance would go negative.

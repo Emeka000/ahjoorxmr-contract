@@ -140,7 +140,7 @@ fn test_proposal_respects_quorum_at_creation() {
             skip_fee: 0,
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
-        },
+        });
 
     let creator = members.get(0).unwrap();
 
