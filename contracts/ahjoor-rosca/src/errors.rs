@@ -150,4 +150,6 @@ pub enum ExtError {
     InvalidDissolutionConfig = 68,
     /// Group start time is in the future.
     GroupNotYetActive = 69,
+    /// Snapshot taken too soon; min_snapshot_interval_ledgers not elapsed (#243).
+    SnapshotTooSoon = 72,
 }

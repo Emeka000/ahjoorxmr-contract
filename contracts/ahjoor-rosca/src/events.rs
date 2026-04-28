@@ -1154,3 +1154,18 @@ pub fn emit_round_duration_update_scheduled(e: &Env, old_duration: u64, new_dura
 pub fn emit_round_duration_applied(e: &Env, round: u32, duration: u64) {
     RoundDurationApplied { round, duration }.publish(e);
 }
+
+// #243: Group State Snapshot Events
+
+/// Event: Group state snapshot taken
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SnapshotTaken {
+    pub snapshot_id: u32,
+    pub taken_by: Address,
+    pub state_hash: BytesN<32>,
+}
+
+pub fn emit_snapshot_taken(e: &Env, snapshot_id: u32, taken_by: Address, state_hash: BytesN<32>) {
+    SnapshotTaken { snapshot_id, taken_by, state_hash }.publish(e);
+}

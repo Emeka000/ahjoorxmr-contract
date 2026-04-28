@@ -272,6 +272,26 @@ pub enum DataKey2 {
 #[contracttype]
 pub enum PersistentKey {
     RoundHistory, // Vec<PayoutRecord> — grows every round
+    /// Append-only snapshot log (#243)
+    SnapshotLog,  // Vec<GroupSnapshot>
+    /// Last snapshot ledger for spam guard (#243)
+    LastSnapshotLedger, // u32
+    /// Min interval between snapshots in ledgers (#243)
+    MinSnapshotIntervalLedgers, // u32
+}
+
+/// On-chain group state snapshot for immutable audit (#243).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupSnapshot {
+    pub snapshot_id: u32,
+    pub taken_at_ledger: u32,
+    pub taken_by: Address,
+    pub round_number: u32,
+    pub pooled_balance: i128,
+    pub member_statuses: Vec<MemberStatus>,
+    pub payout_order: Vec<Address>,
+    pub state_hash: BytesN<32>,
 }
 
 // ── Audit Trail ────────────────────────────────────────────────────────────────
