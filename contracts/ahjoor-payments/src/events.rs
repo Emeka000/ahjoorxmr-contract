@@ -1042,3 +1042,45 @@ pub fn emit_withdrawal_rate_limit_set(e: &Env, merchant: Address, window_seconds
 pub fn emit_withdrawal_rate_limit_exceeded(e: &Env, merchant: Address, attempted: i128, cap: i128) {
     e.events().publish((soroban_sdk::Symbol::new(e, "WdrlLimitExceeded"),), (merchant, attempted, cap));
 }
+
+// #239: Loyalty Points Events
+
+/// Event: Points accrued to customer after payment completion
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct PointsAccrued {
+    pub customer: Address,
+    pub payment_id: u32,
+    pub points_earned: i128,
+    pub balance: i128,
+}
+
+/// Event: Points redeemed as discount on a payment
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct PointsRedeemed {
+    pub customer: Address,
+    pub payment_id: u32,
+    pub points_used: i128,
+    pub discount_applied: i128,
+}
+
+/// Event: Expired points burned on next interaction
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct PointsExpired {
+    pub customer: Address,
+    pub points_expired: i128,
+}
+
+pub fn emit_points_accrued(e: &Env, customer: Address, payment_id: u32, points_earned: i128, balance: i128) {
+    PointsAccrued { customer, payment_id, points_earned, balance }.publish(e);
+}
+
+pub fn emit_points_redeemed(e: &Env, customer: Address, payment_id: u32, points_used: i128, discount_applied: i128) {
+    PointsRedeemed { customer, payment_id, points_used, discount_applied }.publish(e);
+}
+
+pub fn emit_points_expired(e: &Env, customer: Address, points_expired: i128) {
+    PointsExpired { customer, points_expired }.publish(e);
+}

@@ -510,6 +510,19 @@ pub enum DataKey {
     MerchantWithdrawalWindow(Address),
     /// Persistent: per-merchant revenue dashboard summary (#226)
     MerchantSummary(Address),
+    // --- #239: Loyalty Points ---
+    /// Instance: points earned per 1_000_000 units of payment token
+    LoyaltyPointsPerUnit,
+    /// Instance: discount in basis points per 1 point redeemed
+    LoyaltyRedemptionRateBps,
+    /// Instance: minimum payment floor after discount (in token units)
+    LoyaltyMinPaymentFloor,
+    /// Instance: ledgers after which unspent points expire (0 = no expiry)
+    LoyaltyExpiryLedgers,
+    /// Persistent: customer loyalty points balance
+    LoyaltyBalance(Address),
+    /// Persistent: ledger at which customer's points were last accrued (for expiry)
+    LoyaltyLastAccrualLedger(Address),
 }
 
 mod events;
@@ -4636,6 +4649,9 @@ impl AhjoorPaymentsContract {
         events::emit_payment_status_changed(env, payment_id, old_status, PaymentStatus::Completed);
         events::emit_payment_receipt_issued(env, payment_id, receipt_hash);
 
+        // #239: Accrue loyalty points to customer
+        Self::accrue_loyalty_points(env, payment_id, &payment.customer, payment.amount);
+
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -5712,6 +5728,202 @@ impl AhjoorPaymentsContract {
         env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
+    // ── #239: Customer Loyalty Points ─────────────────────────────────────────
+
+    /// Admin configures the loyalty points system.
+    /// points_per_unit: points earned per 1_000_000 units of payment token.
+    /// redemption_rate_bps: discount in basis points per 1 point redeemed.
+    /// min_payment_floor: minimum payment amount after discount.
+    /// expiry_ledgers: ledgers after which unspent points expire (0 = no expiry).
+    pub fn configure_loyalty(
+        env: Env,
+        admin: Address,
+        points_per_unit: u32,
+        redemption_rate_bps: u32,
+        min_payment_floor: i128,
+        expiry_ledgers: u32,
+    ) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin");
+        }
+        env.storage().instance().set(&DataKey::LoyaltyPointsPerUnit, &points_per_unit);
+        env.storage().instance().set(&DataKey::LoyaltyRedemptionRateBps, &redemption_rate_bps);
+        env.storage().instance().set(&DataKey::LoyaltyMinPaymentFloor, &min_payment_floor);
+        env.storage().instance().set(&DataKey::LoyaltyExpiryLedgers, &expiry_ledgers);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Customer redeems loyalty points as a discount on a pending payment.
+    /// Discount = points_to_redeem * redemption_rate_bps / 10_000.
+    /// Payment amount cannot drop below min_payment_floor.
+    /// Points are non-transferable (tied to customer address).
+    pub fn redeem_points(env: Env, customer: Address, payment_id: u32, points_to_redeem: i128) {
+        customer.require_auth();
+
+        // Expire stale points first
+        Self::maybe_expire_points(&env, &customer);
+
+        let balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoyaltyBalance(customer.clone()))
+            .unwrap_or(0);
+        if points_to_redeem <= 0 || points_to_redeem > balance {
+            panic!("Insufficient loyalty points");
+        }
+
+        let redemption_rate_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LoyaltyRedemptionRateBps)
+            .unwrap_or(0);
+        let min_floor: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LoyaltyMinPaymentFloor)
+            .unwrap_or(0);
+
+        let mut payment: Payment = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Payment(payment_id))
+            .expect("Payment not found");
+        if payment.customer != customer {
+            panic!("Not your payment");
+        }
+        if payment.status != PaymentStatus::Pending {
+            panic!("Payment not pending");
+        }
+
+        let discount = (points_to_redeem * redemption_rate_bps as i128) / 10_000;
+        let new_amount = (payment.amount - discount).max(min_floor);
+        let actual_discount = payment.amount - new_amount;
+        let actual_points_used = if actual_discount == discount {
+            points_to_redeem
+        } else {
+            // Recalculate points consumed when floor was hit
+            if redemption_rate_bps == 0 { points_to_redeem } else {
+                (actual_discount * 10_000) / redemption_rate_bps as i128
+            }
+        };
+
+        // Burn points
+        let new_balance = balance - actual_points_used;
+        env.storage().persistent().set(&DataKey::LoyaltyBalance(customer.clone()), &new_balance);
+        env.storage().persistent().extend_ttl(
+            &DataKey::LoyaltyBalance(customer.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        // Apply discount to payment
+        payment.amount = new_amount;
+        env.storage().persistent().set(&DataKey::Payment(payment_id), &payment);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Payment(payment_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_points_redeemed(&env, customer, payment_id, actual_points_used, actual_discount);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Returns the loyalty points balance for a customer (after expiry check).
+    pub fn get_loyalty_balance(env: Env, customer: Address) -> i128 {
+        Self::maybe_expire_points(&env, &customer);
+        env.storage()
+            .persistent()
+            .get(&DataKey::LoyaltyBalance(customer))
+            .unwrap_or(0)
+    }
+
+    /// Internal: mint points to customer after a completed payment.
+    fn accrue_loyalty_points(env: &Env, payment_id: u32, customer: &Address, payment_amount: i128) {
+        let points_per_unit: u32 = match env
+            .storage()
+            .instance()
+            .get(&DataKey::LoyaltyPointsPerUnit)
+        {
+            Some(v) => v,
+            None => return, // loyalty not configured
+        };
+        if points_per_unit == 0 {
+            return;
+        }
+
+        // Expire stale points before accruing
+        Self::maybe_expire_points(env, customer);
+
+        let points_earned = payment_amount * points_per_unit as i128 / 1_000_000;
+        if points_earned <= 0 {
+            return;
+        }
+
+        let old_balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoyaltyBalance(customer.clone()))
+            .unwrap_or(0);
+        let new_balance = old_balance + points_earned;
+
+        env.storage().persistent().set(&DataKey::LoyaltyBalance(customer.clone()), &new_balance);
+        env.storage().persistent().extend_ttl(
+            &DataKey::LoyaltyBalance(customer.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+        env.storage().persistent().set(
+            &DataKey::LoyaltyLastAccrualLedger(customer.clone()),
+            &env.ledger().sequence(),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::LoyaltyLastAccrualLedger(customer.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_points_accrued(env, customer.clone(), payment_id, points_earned, new_balance);
+    }
+
+    /// Internal: burn expired points if expiry window has passed.
+    fn maybe_expire_points(env: &Env, customer: &Address) {
+        let expiry_ledgers: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LoyaltyExpiryLedgers)
+            .unwrap_or(0);
+        if expiry_ledgers == 0 {
+            return;
+        }
+        let last_accrual: u32 = match env
+            .storage()
+            .persistent()
+            .get(&DataKey::LoyaltyLastAccrualLedger(customer.clone()))
+        {
+            Some(v) => v,
+            None => return,
+        };
+        let current = env.ledger().sequence();
+        if current >= last_accrual + expiry_ledgers {
+            let balance: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::LoyaltyBalance(customer.clone()))
+                .unwrap_or(0);
+            if balance > 0 {
+                env.storage().persistent().set(&DataKey::LoyaltyBalance(customer.clone()), &0i128);
+                events::emit_points_expired(env, customer.clone(), balance);
+            }
+        }
+    }
+
 }
 
 #[cfg(test)]
@@ -5731,5 +5943,8 @@ mod test_external_id_multisig_voucher;
 
 #[cfg(test)]
 mod test_merchant_ban;
+
+#[cfg(test)]
+mod test_loyalty_points;
 
 pub use events::*;
