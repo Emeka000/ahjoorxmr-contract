@@ -137,7 +137,105 @@ fn default_init(setup: &TestSetup<'_>) {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
+}
+
+#[test]
+fn test_delayed_start_blocks_then_allows_contribution() {
+    let setup = setup_with_members(1, 1000);
+    let user = setup.members.get(0).unwrap();
+    let start_at = 5000u64;
+
+    setup.client.init(
+        &setup.admin,
+        &setup.members,
+        &100,
+        &setup.token_admin,
+        &3600,
+        &RoscaConfig {
+            strategy: PayoutStrategy::RoundRobin,
+            custom_order: None,
+            penalty_amount: 0,
+            exit_penalty_bps: 0,
+            collective_goal: None,
+            member_goals: None,
+            fee_bps: 0,
+            fee_recipient: None,
+            max_defaults: 3,
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,
+        },
+        &Some(start_at),
+    );
+
+    setup.env.ledger().set_timestamp(start_at - 1);
+    assert_eq!(setup.client.get_start_time(), start_at);
+    assert!(!setup.client.is_active());
+    let blocked = setup
+        .client
+        .try_contribute(&user, &setup.token_admin, &100)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(blocked, ExtError::GroupNotYetActive.into());
+
+    setup.env.ledger().set_timestamp(start_at);
+    assert!(setup.client.is_active());
+    setup.client.contribute(&user, &setup.token_admin, &100);
+}
+
+#[test]
+fn test_cancel_pending_group_refunds_reward_deposit() {
+    let setup = setup_with_members(2, 0);
+    let start_at = 10_000u64;
+
+    setup.token_admin_client.mint(&setup.admin, &1000);
+    let admin_before = setup.token_client.balance(&setup.admin);
+
+    setup.client.init(
+        &setup.admin,
+        &setup.members,
+        &100,
+        &setup.token_admin,
+        &3600,
+        &RoscaConfig {
+            strategy: PayoutStrategy::RoundRobin,
+            custom_order: None,
+            penalty_amount: 0,
+            exit_penalty_bps: 0,
+            collective_goal: None,
+            member_goals: None,
+            fee_bps: 0,
+            fee_recipient: None,
+            max_defaults: 3,
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,
+        },
+        &Some(start_at),
+    );
+
+    setup.client.deposit_rewards(&setup.admin, &200);
+    assert_eq!(setup.token_client.balance(&setup.admin), admin_before - 200);
+
+    setup.client.cancel_pending_group(&setup.admin);
+    assert_eq!(setup.token_client.balance(&setup.admin), admin_before);
+
+    setup.env.ledger().set_timestamp(start_at);
+    let member = setup.members.get(0).unwrap();
+    let contribute_res = setup
+        .client
+        .try_contribute(&member, &setup.token_admin, &100)
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(contribute_res, ExtError::GroupAlreadyDissolved.into());
 }
 
 #[test]
@@ -253,6 +351,7 @@ fn test_admin_assigned_strategy_execution() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     setup.client.contribute(&user1, &setup.token_admin, &100);
@@ -290,6 +389,7 @@ fn test_invalid_admin_order_validation() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
     assert_eq!(
         res.unwrap_err().unwrap(),
@@ -344,6 +444,7 @@ fn test_admin_assigned_e2e_all_rounds() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // ROUND 0: u2 should get the payout first
@@ -384,6 +485,7 @@ fn test_single_defaulter_penalty() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Only user1 contributes
@@ -430,6 +532,7 @@ fn test_multiple_defaulters_penalty() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Only user1 contributes
@@ -473,6 +576,7 @@ fn test_member_suspension_after_two_defaults() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // ROUND 0: user2 defaults
@@ -539,6 +643,7 @@ fn test_suspended_member_skipped_in_payout() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Suspend user2 by making them default twice
@@ -608,6 +713,7 @@ fn test_cannot_penalise_before_deadline() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Try to penalise before any round is closed (no defaulters identified yet)
@@ -645,6 +751,7 @@ fn test_penalty_disabled_when_amount_zero() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     env.ledger().set_timestamp(3601);
@@ -691,6 +798,7 @@ fn test_cannot_penalise_non_defaulter() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Both users contribute (no defaulters)
@@ -741,6 +849,7 @@ fn test_read_interface_lifecycle() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let info = client.get_group_info();
@@ -815,6 +924,7 @@ fn test_member_status_resets_after_round() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // 1. u1 contributes. Round is NOT over because u2 hasn't paid.
@@ -873,6 +983,7 @@ fn test_add_member_before_round() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Add the new member before any round starts (paid_members is empty)
@@ -927,6 +1038,7 @@ fn test_add_member_mid_round_panics() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // u1 contributes — now paid_members is non-empty (mid-round)
@@ -979,6 +1091,7 @@ fn test_remove_member_between_rounds() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Complete round 0 so paid_members is reset
@@ -1035,6 +1148,7 @@ fn test_remove_member_mid_round_panics() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // u1 contributes — mid-round state
@@ -1089,6 +1203,7 @@ fn test_remove_member_who_already_received_payout() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Round 0: u1 receives payout
@@ -1187,6 +1302,7 @@ fn test_init_with_approved_token() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 }
 
@@ -1227,6 +1343,7 @@ fn test_init_with_unapproved_token_panics() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
     assert_eq!(res.unwrap_err().unwrap(), Error::TokenNotApproved.into());
 }
@@ -1260,6 +1377,7 @@ fn test_init_twice_panics() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Second init should panic
@@ -1280,6 +1398,7 @@ fn test_init_twice_panics() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
     assert_eq!(res.unwrap_err().unwrap(), Error::AlreadyInitialized.into());
 }
@@ -1309,6 +1428,7 @@ fn test_contribute_non_member_panics() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Non-member trying to contribute
@@ -1344,6 +1464,7 @@ fn test_contribute_twice_panics() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // First contribution
@@ -1384,6 +1505,7 @@ fn test_payout_correct_member_n_group() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Round 0: u1 gets the pot (4 * 100 = 400)
@@ -1454,6 +1576,7 @@ fn test_contract_balance_zero_after_round() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Before contributions, balance is 0
@@ -1494,6 +1617,7 @@ fn test_single_member_rosca() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Single member contributes, should immediately complete round and payout to self
@@ -1538,6 +1662,7 @@ fn test_large_group_rosca() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Do 1 full cycle (10 rounds)
@@ -1587,6 +1712,7 @@ fn test_get_state_lifecycle_details() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Before any contributions
@@ -1639,6 +1765,7 @@ fn test_bump_storage() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Call bump_storage
@@ -1684,6 +1811,7 @@ fn test_reward_distribution_scenarios() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // 1. Deposit Rewards
@@ -1764,6 +1892,7 @@ fn test_contribution_pot_separation() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Deposit rewards
@@ -1838,6 +1967,7 @@ fn setup_exit_env(
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     (client, admin, u1, u2, u3, token_client, token_admin_addr)
@@ -2117,6 +2247,7 @@ fn test_exit_with_zero_penalty() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // u1 contributes in round 0 but u2 does NOT → round never auto-completes.
@@ -2234,6 +2365,7 @@ fn test_pause_and_resume_flow() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Default state: not paused
@@ -2301,6 +2433,7 @@ fn test_paused_blocks_contribute() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     client.pause_group(&soroban_sdk::String::from_str(&env, "Pause"));
@@ -2338,6 +2471,7 @@ fn test_cannot_pause_already_paused() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let r = soroban_sdk::String::from_str(&env, "P");
@@ -2376,6 +2510,7 @@ fn test_cannot_resume_not_paused() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let res = client.try_resume_group(&soroban_sdk::String::from_str(&env, "R"));
@@ -2431,6 +2566,7 @@ fn test_get_member_contribution_status() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Before any contribution
@@ -2496,6 +2632,7 @@ fn test_overpayment_rejected() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // u1 has already paid 60, tries to pay 60 more (would total 120 > 100)
@@ -2531,6 +2668,7 @@ fn test_emit_deadline_reminder() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     setup.env.ledger().set_timestamp(100);
@@ -2600,6 +2738,7 @@ fn test_get_upcoming_deadlines() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let deadlines = setup.client.get_upcoming_deadlines(&3);
@@ -2640,6 +2779,7 @@ fn test_create_proposal() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let description = soroban_sdk::String::from_str(&setup.env, "Remove inactive member");
@@ -2691,6 +2831,7 @@ fn test_vote_on_proposal() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let description = soroban_sdk::String::from_str(&setup.env, "Penalty appeal");
@@ -2740,6 +2881,7 @@ fn test_execute_proposal_with_quorum() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let description = soroban_sdk::String::from_str(&setup.env, "Update rules");
@@ -2797,6 +2939,7 @@ fn test_proposal_insufficient_quorum() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let description = soroban_sdk::String::from_str(&setup.env, "Test proposal");
@@ -2851,6 +2994,7 @@ fn test_proposal_voted_down() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let description = soroban_sdk::String::from_str(&setup.env, "Member removal");
@@ -2906,6 +3050,7 @@ fn test_penalty_appeal_execution() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Penalize user2
@@ -2971,6 +3116,7 @@ fn test_member_removal_execution() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let description = soroban_sdk::String::from_str(&setup.env, "Remove member");
@@ -3027,6 +3173,7 @@ fn test_non_member_cannot_create_proposal() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let description = soroban_sdk::String::from_str(&setup.env, "Unauthorized proposal");
@@ -3070,6 +3217,7 @@ fn test_cannot_vote_after_deadline() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     setup.env.ledger().set_timestamp(100);
@@ -3121,6 +3269,7 @@ fn test_cannot_vote_twice() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let description = soroban_sdk::String::from_str(&setup.env, "Test proposal");
@@ -3162,6 +3311,7 @@ fn test_get_member_status_non_member() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     let status = setup.client.get_member_status(&non_member);
@@ -3201,6 +3351,7 @@ fn test_get_member_status_active_member() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     // Before contributing
@@ -3245,6 +3396,7 @@ fn test_get_member_status_suspended_member() {
             fee_recipient: None,
             max_defaults: 2,  // Suspend after 2 defaults
         },
+        &None,
     );
 
     // u2 defaults twice to trigger suspension
@@ -3292,6 +3444,7 @@ fn test_get_member_status_exited_member() {
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     setup.client.request_emergency_exit(&u2);
@@ -3652,6 +3805,7 @@ fn setup_finalize_env(
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     (client, admin, u1, u2, u3, token_client, token_admin_addr)
@@ -3782,6 +3936,7 @@ fn setup_exit_penalty_env(
             fee_recipient: None,
             max_defaults: 3,
         },
+        &None,
     );
 
     (client, admin, u1, u2, token_client, ta_addr)

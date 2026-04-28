@@ -45,6 +45,7 @@ fn setup_with_members<'a>(n: usize, voting_mode: VotingMode) -> (Env, AhjoorCont
             max_skips_per_cycle: 0,
             voting_mode,
         },
+        &None,
     );
 
     (env, client, admin, token_admin, members)

@@ -46,6 +46,7 @@ fn setup_waitlist<'a>() -> (Env, AhjoorContractClient<'a>, Address, Address, Vec
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     (env, client, admin, token_addr, members, token_client, token_admin_client)

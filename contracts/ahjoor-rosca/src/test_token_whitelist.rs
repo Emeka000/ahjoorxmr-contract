@@ -11,7 +11,7 @@ fn create_token_contract<'a>(e: &Env) -> Address {
 }
 
 fn create_whitelist_contract(e: &Env) -> Address {
-    e.register_contract_wasm(None, ahjoor_token_whitelist::WASM)
+    e.register_contract(None, ahjoor_token_whitelist::TokenWhitelistContract)
 }
 
 fn create_rosca_contract(e: &Env) -> Address {
@@ -56,7 +56,7 @@ fn test_set_token_whitelist_contract() {
     let config = create_basic_config();
 
     // Initialize rosca contract
-    client.init(&admin, &members, &1000i128, &token, &86400u64, &config);
+    client.init(&admin, &members, &1000i128, &token, &86400u64, &config, &None);
 
     // Set whitelist contract
     client.set_token_whitelist_contract(&admin, &whitelist_contract);
@@ -89,7 +89,7 @@ fn test_token_validation_in_rosca_init() {
 
     // Set whitelist contract in rosca (need to init first with a dummy token)
     let dummy_token = create_token_contract(&e);
-    rosca_client.init(&admin, &members, &1000i128, &dummy_token, &86400u64, &config);
+    rosca_client.init(&admin, &members, &1000i128, &dummy_token, &86400u64, &config, &None);
     rosca_client.set_token_whitelist_contract(&admin, &whitelist_contract);
 
     // Try to add non-whitelisted token - should fail
@@ -122,7 +122,7 @@ fn test_token_validation_in_contribution() {
     let config = create_basic_config();
 
     // Initialize contracts
-    rosca_client.init(&admin, &members, &1000i128, &token, &86400u64, &config);
+    rosca_client.init(&admin, &members, &1000i128, &token, &86400u64, &config, &None);
     whitelist_client.initialize(&admin);
 
     // Set whitelist contract in rosca
@@ -158,7 +158,7 @@ fn test_token_validation_in_insurance_contribution() {
     let config = create_basic_config();
 
     // Initialize contracts
-    rosca_client.init(&admin, &members, &1000i128, &token, &86400u64, &config);
+    rosca_client.init(&admin, &members, &1000i128, &token, &86400u64, &config, &None);
     whitelist_client.initialize(&admin);
 
     // Set whitelist contract in rosca
@@ -194,7 +194,7 @@ fn test_is_token_allowed_function() {
     let config = create_basic_config();
 
     // Initialize contracts
-    rosca_client.init(&admin, &members, &1000i128, &token, &86400u64, &config);
+    rosca_client.init(&admin, &members, &1000i128, &token, &86400u64, &config, &None);
     whitelist_client.initialize(&admin);
 
     // Without whitelist contract set, all tokens should be allowed
@@ -236,7 +236,7 @@ fn test_backward_compatibility_without_whitelist() {
     let config = create_basic_config();
 
     // Initialize rosca contract without setting whitelist
-    rosca_client.init(&admin, &members, &1000i128, &token, &86400u64, &config);
+    rosca_client.init(&admin, &members, &1000i128, &token, &86400u64, &config, &None);
 
     // Should be able to contribute with any token (backward compatibility)
     rosca_client.contribute(&member1, &token, &1000i128);
@@ -264,7 +264,7 @@ fn test_only_admin_can_set_whitelist_contract() {
     let config = create_basic_config();
 
     // Initialize rosca contract
-    client.init(&admin, &members, &1000i128, &token, &86400u64, &config);
+    client.init(&admin, &members, &1000i128, &token, &86400u64, &config, &None);
 
     // Non-admin should not be able to set whitelist contract
     let result = client.try_set_token_whitelist_contract(&non_admin, &whitelist_contract);
@@ -293,7 +293,7 @@ fn test_get_token_whitelist_contract_when_not_set() {
     let config = create_basic_config();
 
     // Initialize rosca contract
-    client.init(&admin, &members, &1000i128, &token, &86400u64, &config);
+    client.init(&admin, &members, &1000i128, &token, &86400u64, &config, &None);
 
     // Should return None when no whitelist contract is set
     let stored_contract = client.get_token_whitelist_contract();
@@ -320,7 +320,7 @@ fn test_token_validation_with_multiple_tokens() {
     let config = create_basic_config();
 
     // Initialize contracts
-    rosca_client.init(&admin, &members, &1000i128, &token1, &86400u64, &config);
+    rosca_client.init(&admin, &members, &1000i128, &token1, &86400u64, &config, &None);
     whitelist_client.initialize(&admin);
     rosca_client.set_token_whitelist_contract(&admin, &whitelist_contract);
 
@@ -367,7 +367,7 @@ fn test_token_delisting_prevents_new_contributions() {
     let config = create_basic_config();
 
     // Initialize contracts
-    rosca_client.init(&admin, &members, &1000i128, &token, &86400u64, &config);
+    rosca_client.init(&admin, &members, &1000i128, &token, &86400u64, &config, &None);
     whitelist_client.initialize(&admin);
     rosca_client.set_token_whitelist_contract(&admin, &whitelist_contract);
 
@@ -405,7 +405,7 @@ fn test_whitelist_validation_in_add_approved_token() {
     let config = create_basic_config();
 
     // Initialize contracts
-    rosca_client.init(&admin, &members, &1000i128, &base_token, &86400u64, &config);
+    rosca_client.init(&admin, &members, &1000i128, &base_token, &86400u64, &config, &None);
     whitelist_client.initialize(&admin);
     rosca_client.set_token_whitelist_contract(&admin, &whitelist_contract);
 

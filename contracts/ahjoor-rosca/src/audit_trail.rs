@@ -112,12 +112,12 @@ fn archive_old_records(env: &Env, current_cycle: u32) {
     if !cycles_to_archive.is_empty() {
         env.storage()
             .persistent()
-            .set(&DataKey::DataKey2::DataKey2::DataKey2::CycleRecords, &cycle_records);
+            .set(&DataKey2::CycleRecords, &cycle_records);
         env.storage()
             .temporary()
-            .set(&DataKey::DataKey2::DataKey2::DataKey2::ArchivedCycleRecords, &archived_records);
+            .set(&DataKey2::ArchivedCycleRecords, &archived_records);
         env.storage().temporary().extend_ttl(
-            &DataKey::DataKey2::DataKey2::DataKey2::ArchivedCycleRecords,
+            &DataKey2::ArchivedCycleRecords,
             TEMP_LIFETIME_THRESHOLD,
             TEMP_BUMP_AMOUNT,
         );
@@ -130,7 +130,7 @@ pub(crate) fn get_cycle_record(env: &Env, cycle_number: u32) -> Option<CycleReco
     let cycle_records: Map<u32, CycleRecord> = env
         .storage()
         .persistent()
-        .get(&DataKey::DataKey2::DataKey2::DataKey2::CycleRecords)
+        .get(&DataKey2::CycleRecords)
         .unwrap_or(Map::new(env));
 
     if let Some(record) = cycle_records.get(cycle_number) {
@@ -141,7 +141,7 @@ pub(crate) fn get_cycle_record(env: &Env, cycle_number: u32) -> Option<CycleReco
     let archived_records: Map<u32, CycleRecord> = env
         .storage()
         .temporary()
-        .get(&DataKey::DataKey2::DataKey2::DataKey2::ArchivedCycleRecords)
+        .get(&DataKey2::ArchivedCycleRecords)
         .unwrap_or(Map::new(env));
 
     archived_records.get(cycle_number)
@@ -158,7 +158,7 @@ pub(crate) fn get_member_contribution_history(
     let cycle_records: Map<u32, CycleRecord> = env
         .storage()
         .persistent()
-        .get(&DataKey::DataKey2::DataKey2::DataKey2::CycleRecords)
+        .get(&DataKey2::CycleRecords)
         .unwrap_or(Map::new(env));
 
     for (_, record) in cycle_records.iter() {
@@ -173,7 +173,7 @@ pub(crate) fn get_member_contribution_history(
     let archived_records: Map<u32, CycleRecord> = env
         .storage()
         .temporary()
-        .get(&DataKey::DataKey2::DataKey2::DataKey2::ArchivedCycleRecords)
+        .get(&DataKey2::ArchivedCycleRecords)
         .unwrap_or(Map::new(env));
 
     for (_, record) in archived_records.iter() {
@@ -192,14 +192,14 @@ pub(crate) fn set_retention_window(env: &Env, new_window: u32) {
     let old_window: u32 = env
         .storage()
         .persistent()
-        .get(&DataKey::DataKey2::DataKey2::DataKey2::CycleRecordRetentionWindow)
+        .get(&DataKey2::CycleRecordRetentionWindow)
         .unwrap_or(DEFAULT_RETENTION_WINDOW);
 
     env.storage()
         .persistent()
-        .set(&DataKey::DataKey2::DataKey2::DataKey2::CycleRecordRetentionWindow, &new_window);
+        .set(&DataKey2::CycleRecordRetentionWindow, &new_window);
     env.storage().persistent().extend_ttl(
-        &DataKey::DataKey2::DataKey2::DataKey2::CycleRecordRetentionWindow,
+        &DataKey2::CycleRecordRetentionWindow,
         PERSISTENT_LIFETIME_THRESHOLD,
         PERSISTENT_BUMP_AMOUNT,
     );
@@ -211,7 +211,7 @@ pub(crate) fn set_retention_window(env: &Env, new_window: u32) {
 pub(crate) fn get_retention_window(env: &Env) -> u32 {
     env.storage()
         .persistent()
-        .get(&DataKey::DataKey2::DataKey2::DataKey2::CycleRecordRetentionWindow)
+        .get(&DataKey2::CycleRecordRetentionWindow)
         .unwrap_or(DEFAULT_RETENTION_WINDOW)
 }
 
@@ -220,13 +220,13 @@ pub(crate) fn record_cycle_start(env: &Env, cycle_number: u32, timestamp: u64) {
     let mut timestamps: Map<u32, u64> = env
         .storage()
         .instance()
-        .get(&DataKey::DataKey2::DataKey2::DataKey2::CycleStartTimestamps)
+        .get(&DataKey2::CycleStartTimestamps)
         .unwrap_or(Map::new(env));
 
     timestamps.set(cycle_number, timestamp);
     env.storage()
         .instance()
-        .set(&DataKey::DataKey2::DataKey2::DataKey2::CycleStartTimestamps, &timestamps);
+        .set(&DataKey2::CycleStartTimestamps, &timestamps);
 }
 
 /// Gets the start timestamp for a cycle.
@@ -234,7 +234,7 @@ pub(crate) fn get_cycle_start_timestamp(env: &Env, cycle_number: u32) -> u64 {
     let timestamps: Map<u32, u64> = env
         .storage()
         .instance()
-        .get(&DataKey::DataKey2::DataKey2::DataKey2::CycleStartTimestamps)
+        .get(&DataKey2::CycleStartTimestamps)
         .unwrap_or(Map::new(env));
 
     timestamps.get(cycle_number).unwrap_or(0)

@@ -70,6 +70,7 @@ fn test_protocol_fee_deducted_from_payout() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     // All members contribute
@@ -119,6 +120,7 @@ fn test_protocol_fee_max_cap_enforced() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     assert_eq!(result.unwrap_err().unwrap(), Error::FeeExceedsMaximum.into());
@@ -154,6 +156,7 @@ fn test_update_fee_function() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     assert_eq!(client.get_fee_bps(), 100);
@@ -195,6 +198,7 @@ fn test_no_fee_when_fee_bps_zero() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     env.ledger().set_timestamp(100);
@@ -239,6 +243,7 @@ fn test_partial_contribution_installments() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     let member1 = members.get(0).unwrap();
@@ -303,6 +308,7 @@ fn test_partial_contribution_events_emitted() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     let member = members.get(0).unwrap();
@@ -340,6 +346,7 @@ fn test_cannot_exceed_remaining_contribution() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     let member = members.get(0).unwrap();
@@ -381,6 +388,7 @@ fn test_get_member_contribution_status() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     let member = members.get(0).unwrap();
@@ -430,6 +438,7 @@ fn test_timestamp_based_scheduling() {
             use_timestamp_schedule: true,
             round_duration_seconds,
         },
+        &None,
     );
 
     // Initial deadline should be 1000000 + 30 days
@@ -489,6 +498,7 @@ fn test_max_members_enforcement() {
             round_duration_seconds: 0,
             max_members: Some(2),
         },
+        &None,
     );
 
     assert_eq!(client.get_max_members(), 2);
@@ -525,6 +535,7 @@ fn test_update_max_members() {
             round_duration_seconds: 0,
             max_members: None,
         },
+        &None,
     );
 
     assert_eq!(client.get_max_members(), 50);
@@ -568,6 +579,7 @@ fn test_max_members_boundary() {
             round_duration_seconds: 0,
             max_members: Some(3),
         },
+        &None,
     );
 
     // Add member at capacity minus 1 (currently 2, capacity 3)
@@ -606,6 +618,7 @@ fn test_max_members_proposal() {
             round_duration_seconds: 0,
             max_members: Some(5),
         },
+        &None,
     );
 
     let user1 = members.get(0).unwrap();
@@ -655,6 +668,7 @@ fn test_configurable_max_defaults() {
             fee_recipient: None,
             max_defaults: 2, // Custom threshold
         },
+        &None,
     );
 
     assert_eq!(client.get_max_defaults(), 2);
@@ -708,6 +722,7 @@ fn test_suspension_threshold_set_event() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 }
 
@@ -734,6 +749,7 @@ fn test_max_defaults_must_be_at_least_one() {
             fee_recipient: None,
             max_defaults: 0, // Invalid
         },
+        &None,
     );
 
     assert_eq!(result.unwrap_err().unwrap(), Error::InvalidMaxDefaults.into());
@@ -761,6 +777,7 @@ fn test_penalise_defaulter_uses_max_defaults() {
             fee_recipient: None,
             max_defaults: 2,
         },
+        &None,
     );
 
     let member1 = members.get(0).unwrap();
@@ -821,6 +838,7 @@ fn test_all_features_integrated() {
             fee_recipient: Some(fee_recipient.clone()),
             max_defaults: 2, // Suspend after 2 defaults
         },
+        &None,
     );
 
     let member1 = members.get(0).unwrap();

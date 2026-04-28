@@ -71,30 +71,6 @@ pub enum Error {
     InsufficientApprovals = 49,
     /// Not a co-admin.
     NotACoAdmin = 50,
-    /// Emergency payout already requested for this member in this cycle.
-    EmergencyPayoutAlreadyRequested = 51,
-    /// Emergency payout quorum not met.
-    EmergencyPayoutQuorumNotMet = 52,
-    /// Emergency payout vote window expired.
-    EmergencyPayoutVoteExpired = 53,
-    /// Emergency payout already executed for this member in this cycle.
-    EmergencyPayoutAlreadyExecuted = 54,
-    /// Maximum emergency payouts per cycle reached.
-    EmergencyPayoutLimitReached = 55,
-    /// Group is already dissolved.
-    GroupAlreadyDissolved = 56,
-    /// Dissolution vote already in progress.
-    DissolutionVoteInProgress = 57,
-    /// Dissolution quorum not met.
-    DissolutionQuorumNotMet = 58,
-    /// Dissolution vote window expired.
-    DissolutionVoteExpired = 59,
-    /// No funds to distribute during dissolution.
-    NoFundsToDistribute = 60,
-    /// Invalid emergency payout configuration.
-    InvalidEmergencyConfig = 61,
-    /// Invalid dissolution configuration.
-    InvalidDissolutionConfig = 62,
 }
 
 /// Extension error codes 51-56 — split from Error because #[contracterror]
@@ -114,4 +90,34 @@ pub enum ExtError {
     AlreadySkipped = 55,
     /// Member has zero contribution weight in weighted voting mode.
     InsufficientWeight = 56,
+    /// Action requires admin privileges.
+    OnlyAdminAllowed = 70,
+    /// Invalid amount or index range.
+    InvalidAmount = 71,
+    /// Emergency payout already requested for this member in this cycle.
+    EmergencyPayoutRequested = 57,
+    /// Emergency payout quorum not met.
+    EmergencyPayoutQuorumNotMet = 58,
+    /// Emergency payout vote window expired.
+    EmergencyPayoutVoteExpired = 59,
+    /// Emergency payout already executed for this member in this cycle.
+    EmergencyPayoutAlreadyExecuted = 60,
+    /// Maximum emergency payouts per cycle reached.
+    EmergencyPayoutLimitReached = 61,
+    /// Group is already dissolved.
+    GroupAlreadyDissolved = 62,
+    /// Dissolution vote already in progress.
+    DissolutionVoteInProgress = 63,
+    /// Dissolution quorum not met.
+    DissolutionQuorumNotMet = 64,
+    /// Dissolution vote window expired.
+    DissolutionVoteExpired = 65,
+    /// No funds to distribute during dissolution.
+    NoFundsToDistribute = 66,
+    /// Invalid emergency payout configuration.
+    InvalidEmergencyConfig = 67,
+    /// Invalid dissolution configuration.
+    InvalidDissolutionConfig = 68,
+    /// Group start time is in the future.
+    GroupNotYetActive = 69,
 }

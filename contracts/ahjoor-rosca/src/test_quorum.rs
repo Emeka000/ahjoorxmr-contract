@@ -52,6 +52,7 @@ fn test_per_type_quorum_enforced() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     // Set Global Quorum to 51% (already default, but let's be sure)

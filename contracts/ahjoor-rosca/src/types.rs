@@ -246,6 +246,10 @@ pub enum DataKey2 {
     ReinstatementFee,        // i128
     PendingReinstatementFee, // Vec<Address>
     ActiveReinstatementProposal, // Map<Address, u32>
+    StartAt,                 // u64
+    GroupActivationEmitted,  // bool
+    Waitlist,                // Vec<(Address, u64)>
+    CatchUpDebt,             // Map<Address, i128>
 }
 
 /// Persistent storage keys — kept separate because DataKey was hitting
@@ -316,7 +320,7 @@ pub enum GroupStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DissolutionConfig {
     pub dissolution_quorum_bps: u32,    // e.g., 7500 = 75%
-    pub dissolution_vote_window_seconds: u64,
+    pub vote_window_seconds: u64,
 }
 
 // #213: Payout Slot Swap

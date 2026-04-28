@@ -1,6 +1,6 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Map, Symbol, Vec,
+    contract, contractimpl, panic_with_error, token, Address, BytesN, Env, Map, String, Symbol, Vec,
 };
 use ahjoor_token_whitelist::TokenWhitelistClient;
 
@@ -45,6 +45,7 @@ impl AhjoorContract {
         token: Address,
         round_duration: u64,
         config: RoscaConfig,
+        start_at: Option<u64>,
     ) {
         if env.storage().instance().has(&DataKey::Members) {
             panic_with_error!(&env, Error::AlreadyInitialized);
@@ -100,8 +101,9 @@ impl AhjoorContract {
             }
         };
 
-        let start_time = env.ledger().timestamp();
-        let deadline = start_time + round_duration;
+        let now = env.ledger().timestamp();
+        let resolved_start_at = start_at.unwrap_or(now);
+        let deadline = resolved_start_at + round_duration;
         let member_count = members.len();
 
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -143,6 +145,12 @@ impl AhjoorContract {
         env.storage()
             .instance()
             .set(&DataKey::RoundDeadline, &deadline);
+        env.storage()
+            .instance()
+            .set(&DataKey2::StartAt, &resolved_start_at);
+        env.storage()
+            .instance()
+            .set(&DataKey2::GroupActivationEmitted, &false);
         env.storage()
             .instance()
             .set(&DataKey::Defaulters, &Vec::<Address>::new(&env));
@@ -234,7 +242,7 @@ impl AhjoorContract {
             .set(&DataKey::RoundDurationSeconds, &config.round_duration_seconds);
 
         if config.use_timestamp_schedule {
-            let timestamp_deadline = env.ledger().timestamp() + config.round_duration_seconds;
+            let timestamp_deadline = resolved_start_at + config.round_duration_seconds;
             env.storage()
                 .instance()
                 .set(&DataKey::RoundDeadlineTimestamp, &timestamp_deadline);
@@ -362,6 +370,59 @@ impl AhjoorContract {
             .instance()
             .get(&DataKey::Admin)
             .expect("Not initialized")
+    }
+
+    /// Returns the configured group start timestamp.
+    pub fn get_start_time(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey2::StartAt)
+            .unwrap_or(env.ledger().timestamp())
+    }
+
+    /// Returns true when group contributions can begin.
+    pub fn is_active(env: Env) -> bool {
+        let start_at = Self::get_start_time(env.clone());
+        let group_status: GroupStatus = env
+            .storage()
+            .instance()
+            .get(&DataKey2::GroupStatus)
+            .unwrap_or(GroupStatus::Active);
+        env.ledger().timestamp() >= start_at && group_status == GroupStatus::Active
+    }
+
+    /// Cancel a pending (not-yet-active) group and refund deposited rewards to admin.
+    pub fn cancel_pending_group(env: Env, admin: Address) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can cancel pending group");
+        }
+
+        let start_at = Self::get_start_time(env.clone());
+        if env.ledger().timestamp() >= start_at {
+            panic_with_error!(&env, ExtError::GroupAlreadyDissolved);
+        }
+
+        let reward_pool: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RewardPool)
+            .unwrap_or(0);
+        if reward_pool > 0 {
+            let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+            let client = token::Client::new(&env, &token_addr);
+            client.transfer(&env.current_contract_address(), &admin, &reward_pool);
+            env.storage().instance().set(&DataKey::RewardPool, &0i128);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey2::GroupStatus, &GroupStatus::Dissolved);
     }
 
     /// Upgrade this contract's WASM code. Admin only.
@@ -614,6 +675,19 @@ impl AhjoorContract {
         internals::check_not_paused(&env);
         contributor.require_auth();
 
+        let start_at = Self::get_start_time(env.clone());
+        if env.ledger().timestamp() < start_at {
+            panic_with_error!(&env, ExtError::GroupNotYetActive);
+        }
+        let group_status: GroupStatus = env
+            .storage()
+            .instance()
+            .get(&DataKey2::GroupStatus)
+            .unwrap_or(GroupStatus::Active);
+        if group_status == GroupStatus::Dissolved {
+            panic_with_error!(&env, ExtError::GroupAlreadyDissolved);
+        }
+
         if amount <= 0 {
             panic_with_error!(&env, Error::AmountMustBePositive);
         }
@@ -657,6 +731,12 @@ impl AhjoorContract {
         if !members.contains(&contributor) {
             panic_with_error!(&env, Error::NotAMember);
         }
+
+        let activation_emitted: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey2::GroupActivationEmitted)
+            .unwrap_or(false);
 
         let mut paid_members: Vec<Address> = env
             .storage()
@@ -922,6 +1002,13 @@ impl AhjoorContract {
                     .instance()
                     .set(&DataKey::MilestonesReached, &milestones_reached);
             }
+        }
+
+        if !activation_emitted {
+            events::emit_group_activated(&env, start_at);
+            env.storage()
+                .instance()
+                .set(&DataKey2::GroupActivationEmitted, &true);
         }
 
         env.storage()
@@ -2202,13 +2289,13 @@ impl AhjoorContract {
         }
 
         if emergency_quorum_bps < 1000 || emergency_quorum_bps > 10000 {
-            panic_with_error!(&env, Error::InvalidEmergencyConfig);
+            panic_with_error!(&env, ExtError::InvalidEmergencyConfig);
         }
         if vote_window_seconds == 0 {
-            panic_with_error!(&env, Error::InvalidEmergencyConfig);
+            panic_with_error!(&env, ExtError::InvalidEmergencyConfig);
         }
         if max_emergency_per_cycle == 0 {
-            panic_with_error!(&env, Error::InvalidEmergencyConfig);
+            panic_with_error!(&env, ExtError::InvalidEmergencyConfig);
         }
 
         let config = EmergencyPayoutConfig {
@@ -2243,7 +2330,7 @@ impl AhjoorContract {
             .get(&DataKey2::GroupStatus)
             .unwrap_or(GroupStatus::Active);
         if group_status == GroupStatus::Dissolved {
-            panic_with_error!(&env, Error::GroupAlreadyDissolved);
+            panic_with_error!(&env, ExtError::GroupAlreadyDissolved);
         }
 
         let members: Vec<Address> = env
@@ -2268,7 +2355,7 @@ impl AhjoorContract {
             .get(&DataKey2::EmergencyPayoutRequests)
             .unwrap_or(Map::new(&env));
         if requests.contains_key((current_round, member.clone())) {
-            panic_with_error!(&env, Error::EmergencyPayoutAlreadyRequested);
+            panic_with_error!(&env, ExtError::EmergencyPayoutRequested);
         }
 
         // Check if already executed in this cycle
@@ -2284,7 +2371,7 @@ impl AhjoorContract {
             .expect("Not initialized");
         let cycle_index = current_round / (payout_order.len() as u32);
         if approved.get((cycle_index, member.clone())).unwrap_or(false) {
-            panic_with_error!(&env, Error::EmergencyPayoutAlreadyExecuted);
+            panic_with_error!(&env, ExtError::EmergencyPayoutAlreadyExecuted);
         }
 
         // Check max emergency payouts per cycle
@@ -2304,7 +2391,7 @@ impl AhjoorContract {
                 max_emergency_per_cycle: 1,
             });
         if current_count >= config.max_emergency_per_cycle {
-            panic_with_error!(&env, Error::EmergencyPayoutLimitReached);
+            panic_with_error!(&env, ExtError::EmergencyPayoutLimitReached);
         }
 
         let now = env.ledger().timestamp();
@@ -2312,7 +2399,7 @@ impl AhjoorContract {
 
         let request = EmergencyPayoutRequest {
             requester: member.clone(),
-            reason_hash,
+            reason_hash: reason_hash.clone(),
             created_at: now,
             deadline,
             votes_for: 0,
@@ -2344,7 +2431,7 @@ impl AhjoorContract {
             .get(&DataKey2::GroupStatus)
             .unwrap_or(GroupStatus::Active);
         if group_status == GroupStatus::Dissolved {
-            panic_with_error!(&env, Error::GroupAlreadyDissolved);
+            panic_with_error!(&env, ExtError::GroupAlreadyDissolved);
         }
 
         let members: Vec<Address> = env
@@ -2381,7 +2468,7 @@ impl AhjoorContract {
 
         let now = env.ledger().timestamp();
         if now > request.deadline {
-            panic_with_error!(&env, Error::EmergencyPayoutVoteExpired);
+            panic_with_error!(&env, ExtError::EmergencyPayoutVoteExpired);
         }
 
         // Check if voter already voted
@@ -2438,7 +2525,7 @@ impl AhjoorContract {
             .get(&DataKey2::GroupStatus)
             .unwrap_or(GroupStatus::Active);
         if group_status == GroupStatus::Dissolved {
-            panic_with_error!(&env, Error::GroupAlreadyDissolved);
+            panic_with_error!(&env, ExtError::GroupAlreadyDissolved);
         }
 
         let current_round: u32 = env
@@ -2458,12 +2545,12 @@ impl AhjoorContract {
 
         let mut request = requests.get((current_round, requester.clone())).unwrap();
         if request.executed {
-            panic_with_error!(&env, Error::EmergencyPayoutAlreadyExecuted);
+            panic_with_error!(&env, ExtError::EmergencyPayoutAlreadyExecuted);
         }
 
         let now = env.ledger().timestamp();
         if now > request.deadline {
-            panic_with_error!(&env, Error::EmergencyPayoutVoteExpired);
+            panic_with_error!(&env, ExtError::EmergencyPayoutVoteExpired);
         }
 
         // Check quorum
@@ -2508,7 +2595,7 @@ impl AhjoorContract {
         let total_votes = request.votes_for + request.votes_against;
 
         if total_votes < required_votes {
-            panic_with_error!(&env, Error::EmergencyPayoutQuorumNotMet);
+            panic_with_error!(&env, ExtError::EmergencyPayoutQuorumNotMet);
         }
 
         if request.votes_for <= request.votes_against {
@@ -2609,10 +2696,10 @@ impl AhjoorContract {
         }
 
         if dissolution_quorum_bps < 1000 || dissolution_quorum_bps > 10000 {
-            panic_with_error!(&env, Error::InvalidDissolutionConfig);
+            panic_with_error!(&env, ExtError::InvalidDissolutionConfig);
         }
         if vote_window_seconds == 0 {
-            panic_with_error!(&env, Error::InvalidDissolutionConfig);
+            panic_with_error!(&env, ExtError::InvalidDissolutionConfig);
         }
 
         let config = DissolutionConfig {
@@ -2648,7 +2735,7 @@ impl AhjoorContract {
             .get(&DataKey2::GroupStatus)
             .unwrap_or(GroupStatus::Active);
         if group_status == GroupStatus::Dissolved {
-            panic_with_error!(&env, Error::GroupAlreadyDissolved);
+            panic_with_error!(&env, ExtError::GroupAlreadyDissolved);
         }
 
         let members: Vec<Address> = env
@@ -2663,7 +2750,7 @@ impl AhjoorContract {
         let total_pool = client.balance(&env.current_contract_address());
 
         if total_pool <= 0 {
-            panic_with_error!(&env, Error::NoFundsToDistribute);
+            panic_with_error!(&env, ExtError::NoFundsToDistribute);
         }
 
         // Get member contributions for pro-rata distribution
@@ -2698,7 +2785,11 @@ impl AhjoorContract {
         // Handle rounding dust - send to fee recipient or first member
         let remaining = client.balance(&env.current_contract_address());
         if remaining > 0 {
-            if let Some(fee_recipient) = env.storage().instance().get(&DataKey::FeeRecipient) {
+            if let Some(fee_recipient) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::FeeRecipient)
+            {
                 client.transfer(&env.current_contract_address(), &fee_recipient, &remaining);
             } else if let Some(first_member) = members.get(0) {
                 client.transfer(&env.current_contract_address(), &first_member, &remaining);
@@ -2729,7 +2820,7 @@ impl AhjoorContract {
             .get(&DataKey2::GroupStatus)
             .unwrap_or(GroupStatus::Active);
         if group_status == GroupStatus::Dissolved {
-            panic_with_error!(&env, Error::GroupAlreadyDissolved);
+            panic_with_error!(&env, ExtError::GroupAlreadyDissolved);
         }
 
         let members: Vec<Address> = env
@@ -2748,13 +2839,14 @@ impl AhjoorContract {
             .unwrap_or(0);
 
         // Check if vote already in progress
-        let deadline: u64 = env
+        let dissolution_deadlines: Map<u32, u64> = env
             .storage()
             .instance()
-            .get(&DataKey2::DissolutionDeadline(current_round))
-            .unwrap_or(0);
+            .get(&DataKey2::DissolutionDeadline)
+            .unwrap_or(Map::new(&env));
+        let deadline: u64 = dissolution_deadlines.get(current_round).unwrap_or(0);
         if deadline > 0 && env.ledger().timestamp() < deadline {
-            panic_with_error!(&env, Error::DissolutionVoteInProgress);
+            panic_with_error!(&env, ExtError::DissolutionVoteInProgress);
         }
 
         let config: DissolutionConfig = env
@@ -2767,12 +2859,25 @@ impl AhjoorContract {
             });
 
         let new_deadline = env.ledger().timestamp() + config.vote_window_seconds;
+        let mut new_deadlines: Map<u32, u64> = env
+            .storage()
+            .instance()
+            .get(&DataKey2::DissolutionDeadline)
+            .unwrap_or(Map::new(&env));
+        new_deadlines.set(current_round, new_deadline);
         env.storage()
             .instance()
-            .set(&DataKey2::DissolutionDeadline(current_round), &new_deadline);
+            .set(&DataKey2::DissolutionDeadline, &new_deadlines);
+
+        let mut vote_counts: Map<u32, i128> = env
+            .storage()
+            .instance()
+            .get(&DataKey2::DissolutionVoteCount)
+            .unwrap_or(Map::new(&env));
+        vote_counts.set(current_round, 0);
         env.storage()
             .instance()
-            .set(&DataKey2::DissolutionVoteCount(current_round), &0i128);
+            .set(&DataKey2::DissolutionVoteCount, &vote_counts);
 
         events::emit_dissolution_vote_started(&env, current_round, new_deadline);
 
@@ -2792,7 +2897,7 @@ impl AhjoorContract {
             .get(&DataKey2::GroupStatus)
             .unwrap_or(GroupStatus::Active);
         if group_status == GroupStatus::Dissolved {
-            panic_with_error!(&env, Error::GroupAlreadyDissolved);
+            panic_with_error!(&env, ExtError::GroupAlreadyDissolved);
         }
 
         let members: Vec<Address> = env
@@ -2810,17 +2915,18 @@ impl AhjoorContract {
             .get(&DataKey::CurrentRound)
             .unwrap_or(0);
 
-        let deadline: u64 = env
+        let dissolution_deadlines: Map<u32, u64> = env
             .storage()
             .instance()
-            .get(&DataKey2::DissolutionDeadline(current_round))
-            .unwrap_or(0);
+            .get(&DataKey2::DissolutionDeadline)
+            .unwrap_or(Map::new(&env));
+        let deadline: u64 = dissolution_deadlines.get(current_round).unwrap_or(0);
         if deadline == 0 {
             panic!("No dissolution vote in progress");
         }
 
         if env.ledger().timestamp() > deadline {
-            panic_with_error!(&env, Error::DissolutionVoteExpired);
+            panic_with_error!(&env, ExtError::DissolutionVoteExpired);
         }
 
         // Check if already voted
@@ -2842,17 +2948,19 @@ impl AhjoorContract {
 
         // Update vote count
         let voter_weight = Self::get_member_voting_weight(env.clone(), voter.clone());
-        let mut votes_for: i128 = env
+        let mut vote_counts: Map<u32, i128> = env
             .storage()
             .instance()
-            .get(&DataKey2::DissolutionVoteCount(current_round))
-            .unwrap_or(0);
+            .get(&DataKey2::DissolutionVoteCount)
+            .unwrap_or(Map::new(&env));
+        let mut votes_for: i128 = vote_counts.get(current_round).unwrap_or(0);
         if approve {
             votes_for += voter_weight;
         }
+        vote_counts.set(current_round, votes_for);
         env.storage()
             .instance()
-            .set(&DataKey2::DissolutionVoteCount(current_round), &votes_for);
+            .set(&DataKey2::DissolutionVoteCount, &vote_counts);
 
         events::emit_dissolution_vote_cast(&env, current_round, voter, approve, votes_for);
 
@@ -2871,7 +2979,7 @@ impl AhjoorContract {
             .get(&DataKey2::GroupStatus)
             .unwrap_or(GroupStatus::Active);
         if group_status == GroupStatus::Dissolved {
-            panic_with_error!(&env, Error::GroupAlreadyDissolved);
+            panic_with_error!(&env, ExtError::GroupAlreadyDissolved);
         }
 
         let current_round: u32 = env
@@ -2880,11 +2988,12 @@ impl AhjoorContract {
             .get(&DataKey::CurrentRound)
             .unwrap_or(0);
 
-        let deadline: u64 = env
+        let dissolution_deadlines: Map<u32, u64> = env
             .storage()
             .instance()
-            .get(&DataKey2::DissolutionDeadline(current_round))
-            .unwrap_or(0);
+            .get(&DataKey2::DissolutionDeadline)
+            .unwrap_or(Map::new(&env));
+        let deadline: u64 = dissolution_deadlines.get(current_round).unwrap_or(0);
         if deadline == 0 {
             panic!("No dissolution vote in progress");
         }
@@ -2929,23 +3038,31 @@ impl AhjoorContract {
             }
         };
 
-        let votes_for: i128 = env
+        let vote_counts: Map<u32, i128> = env
             .storage()
             .instance()
-            .get(&DataKey2::DissolutionVoteCount(current_round))
-            .unwrap_or(0);
+            .get(&DataKey2::DissolutionVoteCount)
+            .unwrap_or(Map::new(&env));
+        let votes_for: i128 = vote_counts.get(current_round).unwrap_or(0);
 
         let required_votes = ((total_possible_votes * config.dissolution_quorum_bps as i128) + 9999) / 10000;
 
         if votes_for < required_votes {
-            panic_with_error!(&env, Error::DissolutionQuorumNotMet);
+            panic_with_error!(&env, ExtError::DissolutionQuorumNotMet);
         }
 
         events::emit_dissolution_quorum_reached(&env, current_round, votes_for);
 
         // Execute dissolution with empty reason hash
-        let reason_hash = BytesN::<32>::from_array(&env, [0u8; 32]);
-        Self::dissolve_group(env, env.storage().instance().get(&DataKey::Admin).expect("Not initialized"), reason_hash);
+        let reason_hash = BytesN::<32>::from_array(&env, &[0u8; 32]);
+        Self::dissolve_group(
+            env.clone(),
+            env.storage()
+                .instance()
+                .get(&DataKey::Admin)
+                .expect("Not initialized"),
+            reason_hash,
+        );
     }
 
     // --- READ INTERFACE ---
@@ -4201,7 +4318,7 @@ impl AhjoorContract {
         admin.require_auth();
         internals::check_not_paused(&env);
         let a: Address = env.storage().instance().get(&DataKey::Admin).expect("No admin");
-        if admin != a { panic_with_error!(&env, Error::OnlyAdminAllowed); }
+        if admin != a { panic_with_error!(&env, ExtError::OnlyAdminAllowed); }
         env.storage().instance().set(&DataKey2::SlotSwapRequiresAdmin, &requires_admin);
         env.storage().instance().set(&DataKey2::SlotSwapExpirySeconds, &expiry_seconds);
     }
@@ -4214,7 +4331,7 @@ impl AhjoorContract {
         let current_round: u32 = env.storage().instance().get(&DataKey::CurrentRound).unwrap_or(0);
         let payout_order: Vec<Address> = env.storage().instance().get(&DataKey::PayoutOrder).unwrap();
         let order_len = payout_order.len() as u32;
-        if round_a >= order_len || round_b >= order_len || round_a <= current_round || round_b <= current_round { panic_with_error!(&env, Error::InvalidAmount); }
+        if round_a >= order_len || round_b >= order_len || round_a <= current_round || round_b <= current_round { panic_with_error!(&env, ExtError::InvalidAmount); }
         if payout_order.get(round_a).unwrap() != initiator || payout_order.get(round_b).unwrap() != counterparty { panic_with_error!(&env, Error::OnlyMembersAllowed); }
         let expiry: u64 = env.storage().instance().get(&DataKey2::SlotSwapExpirySeconds).unwrap_or(86_400);
         let now = env.ledger().timestamp();
@@ -4265,7 +4382,7 @@ impl AhjoorContract {
     pub fn approve_slot_swap(env: Env, admin: Address, swap_id: u32) {
         admin.require_auth();
         let a: Address = env.storage().instance().get(&DataKey::Admin).expect("No admin");
-        if admin != a { panic_with_error!(&env, Error::OnlyAdminAllowed); }
+        if admin != a { panic_with_error!(&env, ExtError::OnlyAdminAllowed); }
         let mut swaps: Map<u32, SlotSwap> = env.storage().instance().get(&DataKey2::SlotSwaps).unwrap_or(Map::new(&env));
         let swap = swaps.get(swap_id).expect("Swap not found");
         if swap.status != SlotSwapStatus::Accepted { panic_with_error!(&env, Error::ProposalNotPending); }
@@ -4297,7 +4414,7 @@ impl AhjoorContract {
         admin.require_auth();
         internals::check_not_paused(&env);
         let a: Address = env.storage().instance().get(&DataKey::Admin).expect("No admin");
-        if admin != a { panic_with_error!(&env, Error::OnlyAdminAllowed); }
+        if admin != a { panic_with_error!(&env, ExtError::OnlyAdminAllowed); }
         env.storage().instance().set(&DataKey2::InsuranceCoverageMode, &mode);
         events::emit_insurance_coverage_mode_set(&env, mode as u32);
     }
@@ -4313,7 +4430,7 @@ impl AhjoorContract {
         admin.require_auth();
         internals::check_not_paused(&env);
         let a: Address = env.storage().instance().get(&DataKey::Admin).expect("No admin");
-        if admin != a { panic_with_error!(&env, Error::OnlyAdminAllowed); }
+        if admin != a { panic_with_error!(&env, ExtError::OnlyAdminAllowed); }
         if fee < 0 { panic_with_error!(&env, Error::AmountMustBePositive); }
         env.storage().instance().set(&DataKey2::ReinstatementFee, &fee);
     }

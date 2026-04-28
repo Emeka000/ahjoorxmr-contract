@@ -64,6 +64,7 @@ fn test_skip_success_pays_fee_and_excludes_defaulter() {
             max_skips_per_cycle: 1,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     let member_skipping = members.get(0).unwrap();
@@ -126,6 +127,7 @@ fn test_skip_limit_enforced() {
             max_skips_per_cycle: 1,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     let member = members.get(0).unwrap();
@@ -136,7 +138,7 @@ fn test_skip_limit_enforced() {
 
     // Second skip in same cycle (cycle 0) - fail
     let result = client.try_request_skip(&member, &1);
-    assert_eq!(result.unwrap_err().unwrap(), Error::SkipLimitReached.into());
+    assert_eq!(result.unwrap_err().unwrap(), ExtError::SkipLimitReached.into());
 }
 
 #[test]
@@ -169,6 +171,7 @@ fn test_skip_deadline_enforced() {
             max_skips_per_cycle: 5,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     let member = members.get(0).unwrap();
@@ -210,6 +213,7 @@ fn test_cannot_skip_after_contribution() {
             max_skips_per_cycle: 5,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     let member = members.get(0).unwrap();

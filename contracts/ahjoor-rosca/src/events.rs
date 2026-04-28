@@ -9,6 +9,13 @@ pub struct RoscaInitialized {
     pub contribution_amount: i128,
 }
 
+/// Event: Group activated after delayed start
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct GroupActivated {
+    pub start_at: u64,
+}
+
 /// Event: Contribution received
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -371,6 +378,10 @@ pub fn emit_rosc_init(e: &Env, member_count: u32, contribution_amount: i128) {
         contribution_amount,
     }
     .publish(e);
+}
+
+pub fn emit_group_activated(e: &Env, start_at: u64) {
+    GroupActivated { start_at }.publish(e);
 }
 
 pub fn emit_round_deadline_timestamp_set(e: &Env, round: u32, timestamp: u64) {
@@ -841,6 +852,25 @@ pub fn emit_cycle_record_archived(e: &Env, cycle_number: u32) {
 
 pub fn emit_retention_window_updated(e: &Env, old_window: u32, new_window: u32) {
     RetentionWindowUpdated { old_window, new_window }.publish(e);
+}
+
+pub fn emit_waitlist_updated(e: &Env, member: Address, joined: bool, size: u32) {
+    e.events()
+        .publish((Symbol::new(e, "WaitlistUpd"),), (member, joined, size));
+}
+
+pub fn emit_member_enrolled_from_waitlist(
+    e: &Env,
+    member: Address,
+    vacated_by: Address,
+    round: u32,
+    catch_up_amount: i128,
+) {
+    e.events()
+        .publish(
+            (Symbol::new(e, "WaitEnroll"),),
+            (member, vacated_by, round, catch_up_amount),
+        );
 }
 
 // --- Emergency Payout Events ---

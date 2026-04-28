@@ -63,6 +63,7 @@ fn test_tiered_contributions() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     let member1 = members.get(0).unwrap();
@@ -123,13 +124,14 @@ fn test_invalid_tier_rejected() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     let member = members.get(0).unwrap();
     
     // Tier 0 is invalid
     let result = client.try_set_member_tier(&admin, &member, &0);
-    assert_eq!(result.unwrap_err().unwrap(), Error::InvalidTier.into());
+    assert_eq!(result.unwrap_err().unwrap(), ExtError::InvalidTier.into());
 }
 
 #[test]
@@ -161,6 +163,7 @@ fn test_mixed_tiers_pot_size() {
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     let member1 = members.get(0).unwrap();

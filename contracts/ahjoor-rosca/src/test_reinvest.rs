@@ -45,6 +45,7 @@ fn setup_with_members<'a>(n: usize) -> (Env, AhjoorContractClient<'a>, Address, 
             max_skips_per_cycle: 0,
             voting_mode: VotingMode::Equal,
         },
+        &None,
     );
 
     (env, client, admin, token_admin, members)
