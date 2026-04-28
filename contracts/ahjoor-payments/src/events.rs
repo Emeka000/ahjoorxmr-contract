@@ -1042,3 +1042,32 @@ pub fn emit_withdrawal_rate_limit_set(e: &Env, merchant: Address, window_seconds
 pub fn emit_withdrawal_rate_limit_exceeded(e: &Env, merchant: Address, attempted: i128, cap: i128) {
     e.events().publish((soroban_sdk::Symbol::new(e, "WdrlLimitExceeded"),), (merchant, attempted, cap));
 }
+
+// #246: Dynamic Settlement Events
+/// Event: Dynamic payment created with oracle price feed
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct DynamicPaymentCreated {
+    pub payment_id: u32,
+    pub fiat_amount: i128,
+    pub fiat_currency: soroban_sdk::Symbol,
+    pub oracle_address: Address,
+}
+
+/// Event: Dynamic payment settled with oracle rate
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct DynamicPaymentSettled {
+    pub payment_id: u32,
+    pub fiat_amount: i128,
+    pub token_amount: i128,
+    pub rate_used: i128,
+}
+
+pub fn emit_dynamic_payment_created(e: &Env, payment_id: u32, fiat_amount: i128, fiat_currency: soroban_sdk::Symbol, oracle_address: Address) {
+    DynamicPaymentCreated { payment_id, fiat_amount, fiat_currency, oracle_address }.publish(e);
+}
+
+pub fn emit_dynamic_payment_settled(e: &Env, payment_id: u32, fiat_amount: i128, token_amount: i128, rate_used: i128) {
+    DynamicPaymentSettled { payment_id, fiat_amount, token_amount, rate_used }.publish(e);
+}

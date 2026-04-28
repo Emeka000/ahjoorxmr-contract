@@ -105,6 +105,12 @@ pub enum Error {
     VoucherRevoked = 12,
     VoucherNotFound = 13,
     WithdrawalRateLimitExceeded = 14,
+    /// Slippage tolerance exceeded on dynamic payment settlement (#246)
+    SlippageExceeded = 15,
+    /// Oracle address is not on the admin whitelist (#246)
+    OracleNotWhitelisted = 16,
+    /// Dynamic payment has expired (#246)
+    DynamicPaymentExpired = 17,
 }
 
 /// Per-merchant withdrawal rate limit config (#231).
@@ -358,6 +364,22 @@ pub struct SlippageConfig {
     pub max_bps: u32,
 }
 
+/// Oracle-backed dynamic payment record (#246).
+/// The settlement amount is computed at complete_payment time using the oracle rate.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DynamicPayment {
+    pub payment_id: u32,
+    pub fiat_amount: i128,
+    pub fiat_currency: Symbol,
+    pub oracle_address: Address,
+    pub token: Address,
+    pub slippage_bps: u32,
+    /// Oracle price at creation time (scaled by 10^7), used for slippage check at settlement
+    pub creation_rate: i128,
+    pub expiry: u64,
+}
+
 /// Per-merchant volume cap configuration (#131)
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -510,6 +532,10 @@ pub enum DataKey {
     MerchantWithdrawalWindow(Address),
     /// Persistent: per-merchant revenue dashboard summary (#226)
     MerchantSummary(Address),
+    /// Persistent: dynamic payment record (#246)
+    DynamicPayment(u32),
+    /// Instance: admin-maintained oracle whitelist (#246)
+    OracleWhitelist,
 }
 
 mod events;
@@ -4261,6 +4287,9 @@ impl AhjoorPaymentsContract {
             panic!("Payment has expired");
         }
 
+        // #246: Recompute token amount at current oracle rate for dynamic payments
+        Self::settle_dynamic_payment_if_needed(env, &mut payment);
+
         Self::finalize_payment(env, payment_id, &mut payment);
     }
 
@@ -5712,6 +5741,214 @@ impl AhjoorPaymentsContract {
         env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
+    // =========================================================================
+    // #246: Dynamic Settlement via Oracle Price Feed
+    // =========================================================================
+
+    /// Admin adds an oracle address to the whitelist.
+    pub fn add_oracle_to_whitelist(env: Env, admin: Address, oracle: Address) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
+        if admin != stored_admin { panic!("Only admin can manage oracle whitelist"); }
+
+        let mut whitelist: Vec<Address> = env.storage().instance().get(&DataKey::OracleWhitelist).unwrap_or(Vec::new(&env));
+        if !whitelist.contains(&oracle) {
+            whitelist.push_back(oracle);
+            env.storage().instance().set(&DataKey::OracleWhitelist, &whitelist);
+        }
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin removes an oracle address from the whitelist.
+    pub fn remove_oracle_from_whitelist(env: Env, admin: Address, oracle: Address) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
+        if admin != stored_admin { panic!("Only admin can manage oracle whitelist"); }
+
+        let whitelist: Vec<Address> = env.storage().instance().get(&DataKey::OracleWhitelist).unwrap_or(Vec::new(&env));
+        let mut new_list = Vec::new(&env);
+        for addr in whitelist.iter() {
+            if addr != oracle { new_list.push_back(addr); }
+        }
+        env.storage().instance().set(&DataKey::OracleWhitelist, &new_list);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get the oracle whitelist.
+    pub fn get_oracle_whitelist(env: Env) -> Vec<Address> {
+        env.storage().instance().get(&DataKey::OracleWhitelist).unwrap_or(Vec::new(&env))
+    }
+
+    /// Merchant creates a fiat-denominated invoice backed by an oracle price feed.
+    /// The token amount is computed at settlement time using the oracle rate.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_dynamic_payment(
+        env: Env,
+        customer: Address,
+        merchant: Address,
+        fiat_amount: i128,
+        fiat_currency: Symbol,
+        oracle_address: Address,
+        token: Address,
+        slippage_bps: u32,
+        expiry: u64,
+    ) -> u32 {
+        Self::require_not_paused(&env);
+        customer.require_auth();
+
+        if fiat_amount <= 0 { panic!("fiat_amount must be positive"); }
+
+        // Validate oracle is whitelisted
+        let whitelist: Vec<Address> = env.storage().instance().get(&DataKey::OracleWhitelist).unwrap_or(Vec::new(&env));
+        if !whitelist.contains(&oracle_address) {
+            panic_with_error!(&env, Error::OracleNotWhitelisted);
+        }
+
+        Self::require_token_allowed(&env, &token);
+        Self::require_merchant_approved(&env, &merchant);
+
+        // Fetch oracle rate at creation time for slippage baseline
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).expect("Oracle not configured");
+        let max_oracle_age: u64 = env.storage().instance().get(&DataKey::MaxOracleAge).expect("Oracle not configured");
+        let oracle_client = oracle::OracleClient::new(&env, &oracle_address);
+        let price_data = oracle_client.lastprice(&token, &usdc_token).expect("Oracle returned no price");
+        let now = env.ledger().timestamp();
+        if now.saturating_sub(price_data.timestamp) > max_oracle_age {
+            panic!("Oracle price is stale");
+        }
+        if price_data.price <= 0 { panic!("Invalid oracle price"); }
+
+        // Compute token amount at creation rate: token_amount = fiat_amount * 10^7 / price
+        let creation_token_amount = (fiat_amount * ORACLE_PRICE_PRECISION) / price_data.price;
+        if creation_token_amount <= 0 { panic!("Computed token amount is zero"); }
+
+        // Transfer token from customer to escrow
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&customer, &env.current_contract_address(), &creation_token_amount);
+
+        let timeout: u64 = env.storage().instance().get(&DataKey::PaymentTimeout).unwrap_or(DEFAULT_PAYMENT_TIMEOUT);
+        let payment_expiry = if expiry > 0 { expiry } else { now + timeout };
+
+        let payment_id = Self::next_payment_id(&env);
+        let payment = Payment {
+            id: payment_id,
+            customer: customer.clone(),
+            merchant: merchant.clone(),
+            amount: creation_token_amount,
+            token: token.clone(),
+            status: PaymentStatus::Pending,
+            created_at: now,
+            expires_at: payment_expiry,
+            refunded_amount: 0,
+            reference: None,
+            metadata: None,
+            split_recipients: None,
+            execute_after: 0,
+            category: None,
+            tags: None,
+            capture_deadline: 0,
+            external_id: None,
+        };
+
+        env.storage().persistent().set(&DataKey::Payment(payment_id), &payment);
+        env.storage().persistent().extend_ttl(&DataKey::Payment(payment_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+
+        // Store dynamic payment metadata
+        let dynamic = DynamicPayment {
+            payment_id,
+            fiat_amount,
+            fiat_currency: fiat_currency.clone(),
+            oracle_address: oracle_address.clone(),
+            token: token.clone(),
+            slippage_bps,
+            creation_rate: price_data.price,
+            expiry: payment_expiry,
+        };
+        env.storage().persistent().set(&DataKey::DynamicPayment(payment_id), &dynamic);
+        env.storage().persistent().extend_ttl(&DataKey::DynamicPayment(payment_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+
+        Self::add_customer_payment(&env, &customer, payment_id);
+        Self::inc_global_created(&env);
+        Self::inc_merchant_created(&env, &merchant);
+
+        events::emit_dynamic_payment_created(&env, payment_id, fiat_amount, fiat_currency, oracle_address);
+        events::emit_payment_created(&env, payment_id, customer, merchant, creation_token_amount, token);
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        payment_id
+    }
+
+    /// Get the dynamic payment metadata for a payment ID.
+    pub fn get_dynamic_payment(env: Env, payment_id: u32) -> DynamicPayment {
+        env.storage().persistent().get(&DataKey::DynamicPayment(payment_id)).expect("Not a dynamic payment")
+    }
+
+    /// Internal: if payment_id has a DynamicPayment record, recompute token amount at current oracle rate,
+    /// apply slippage check, adjust payment.amount, and return the settlement rate.
+    fn settle_dynamic_payment_if_needed(env: &Env, payment: &mut Payment) {
+        let dynamic_opt: Option<DynamicPayment> = env.storage().persistent().get(&DataKey::DynamicPayment(payment.id));
+        let dynamic = match dynamic_opt {
+            Some(d) => d,
+            None => return, // Not a dynamic payment
+        };
+
+        let now = env.ledger().timestamp();
+        if now >= dynamic.expiry {
+            panic_with_error!(env, Error::DynamicPaymentExpired);
+        }
+
+        // Validate oracle still whitelisted
+        let whitelist: Vec<Address> = env.storage().instance().get(&DataKey::OracleWhitelist).unwrap_or(Vec::new(env));
+        if !whitelist.contains(&dynamic.oracle_address) {
+            panic_with_error!(env, Error::OracleNotWhitelisted);
+        }
+
+        let usdc_token: Address = env.storage().instance().get(&DataKey::UsdcToken).expect("Oracle not configured");
+        let max_oracle_age: u64 = env.storage().instance().get(&DataKey::MaxOracleAge).expect("Oracle not configured");
+        let oracle_client = oracle::OracleClient::new(env, &dynamic.oracle_address);
+        let price_data = oracle_client.lastprice(&dynamic.token, &usdc_token).expect("Oracle returned no price");
+
+        if now.saturating_sub(price_data.timestamp) > max_oracle_age {
+            panic!("Oracle price is stale at settlement");
+        }
+        if price_data.price <= 0 { panic!("Invalid oracle price at settlement"); }
+
+        // Compute settlement token amount: token_amount = fiat_amount * 10^7 / current_rate
+        let settlement_token_amount = (dynamic.fiat_amount * ORACLE_PRICE_PRECISION) / price_data.price;
+        if settlement_token_amount <= 0 { panic!("Computed settlement token amount is zero"); }
+
+        // Slippage check: compare settlement rate vs creation rate
+        let rate_deviation = if price_data.price >= dynamic.creation_rate {
+            price_data.price - dynamic.creation_rate
+        } else {
+            dynamic.creation_rate - price_data.price
+        };
+        let deviation_bps = (rate_deviation * 10_000) / dynamic.creation_rate;
+        if deviation_bps > dynamic.slippage_bps as i128 {
+            panic_with_error!(env, Error::SlippageExceeded);
+        }
+
+        // Adjust escrowed amount: refund or collect difference
+        let escrowed = payment.amount;
+        let token_client = token::Client::new(env, &dynamic.token);
+        if settlement_token_amount < escrowed {
+            // Refund excess to customer
+            let refund = escrowed - settlement_token_amount;
+            token_client.transfer(&env.current_contract_address(), &payment.customer, &refund);
+        } else if settlement_token_amount > escrowed {
+            // Collect additional from customer
+            let extra = settlement_token_amount - escrowed;
+            token_client.transfer(&payment.customer, &env.current_contract_address(), &extra);
+        }
+
+        events::emit_dynamic_payment_settled(env, payment.id, dynamic.fiat_amount, settlement_token_amount, price_data.price);
+
+        // Update payment amount to settlement amount
+        payment.amount = settlement_token_amount;
+    }
+
 }
 
 #[cfg(test)]
@@ -5731,5 +5968,8 @@ mod test_external_id_multisig_voucher;
 
 #[cfg(test)]
 mod test_merchant_ban;
+
+#[cfg(test)]
+mod test_dynamic_settlement;
 
 pub use events::*;
