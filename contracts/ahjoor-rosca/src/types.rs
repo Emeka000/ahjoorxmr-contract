@@ -37,6 +37,8 @@ pub struct RoscaConfig {
     pub fee_recipient: Option<Address>,
     /// Number of consecutive missed rounds before suspension (default: 3)
     pub max_defaults: u32,
+    /// Additional ledgers (time units) before penalties are applied after deadline.
+    pub grace_period_ledgers: u32,
     pub use_timestamp_schedule: bool,
     pub round_duration_seconds: u64,
     pub max_members: Option<u32>,
@@ -264,6 +266,17 @@ pub enum DataKey2 {
     CatchUpDebt,             // Map<Address, i128> — catch-up contributions owed
     StartAt,                 // u64
     GroupActivationEmitted,  // bool
+    Waitlist,                // Vec<(Address, u64)>
+    CatchUpDebt,             // Map<Address, i128>
+    GracePeriodLedgers,      // u32
+    PendingPenalties,        // Map<Address, u32> (member -> round)
+    LastRoundDeadline,       // u64
+    // #240: Co-Signer Guarantee
+    CoSigners,               // Map<Address, CoSignerRecord> — member → co-signer record
+    CoSignerWindowLedgers,   // u32 — grace period ledgers before penalty applied
+    CoSignerWindowStart,     // Map<Address, u32> — member → ledger when window opened
+    // #236: Group Activity Freeze
+    IsFrozen,                // bool — group is frozen by contract-level admin
 }
 
 /// Persistent storage keys — kept separate because DataKey was hitting
@@ -272,6 +285,55 @@ pub enum DataKey2 {
 #[contracttype]
 pub enum PersistentKey {
     RoundHistory, // Vec<PayoutRecord> — grows every round
+    ReputationScores, // Map<Address, i128> — cumulative member reliability score
+    FreezeLog,    // Vec<FreezeRecord> — append-only freeze audit log
+}
+
+/// Record of a single freeze/unfreeze cycle for a group.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FreezeRecord {
+    pub frozen_at_ledger: u32,
+    pub frozen_by: Address,
+    pub reason_hash: BytesN<32>,
+    pub unfrozen_at_ledger: Option<u32>,
+    pub resolution_hash: Option<BytesN<32>>,
+    /// Append-only snapshot log (#243)
+    SnapshotLog,  // Vec<GroupSnapshot>
+    /// Last snapshot ledger for spam guard (#243)
+    LastSnapshotLedger, // u32
+    /// Min interval between snapshots in ledgers (#243)
+    MinSnapshotIntervalLedgers, // u32
+}
+
+/// On-chain group state snapshot for immutable audit (#243).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupSnapshot {
+    pub snapshot_id: u32,
+    pub taken_at_ledger: u32,
+    pub taken_by: Address,
+    pub round_number: u32,
+    pub pooled_balance: i128,
+    pub member_statuses: Vec<MemberStatus>,
+    pub payout_order: Vec<Address>,
+    pub state_hash: BytesN<32>,
+}
+
+// #240: Co-Signer Guarantee
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[contracttype]
+pub enum CoSignerStatus {
+    Pending = 0,   // set by member, not yet accepted
+    Active = 1,    // accepted by co-signer
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CoSignerRecord {
+    pub co_signer: Address,
+    pub status: CoSignerStatus,
 }
 
 // ── Audit Trail ────────────────────────────────────────────────────────────────
@@ -391,3 +453,5 @@ pub struct InsuranceClaim {
     pub defaulter: Address,
     pub amount_covered: i128,
 }
+
+

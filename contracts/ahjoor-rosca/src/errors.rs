@@ -150,4 +150,22 @@ pub enum ExtError {
     InvalidDissolutionConfig = 68,
     /// Group start time is in the future.
     GroupNotYetActive = 69,
+    /// Co-signer already set for this member.
+    CoSignerAlreadySet = 72,
+    /// No co-signer found for this member.
+    NoCoSignerFound = 73,
+    /// Co-signer has not accepted the designation.
+    CoSignerNotAccepted = 74,
+    /// Not the designated co-signer for this member.
+    NotTheCoSigner = 75,
+    /// Co-signer window has not opened (member has not defaulted).
+    CoSignerWindowNotOpen = 76,
+    /// Co-signer window has expired.
+    CoSignerWindowExpired = 77,
+    /// Group is frozen by contract-level admin pending investigation.
+    GroupFrozen = 72,
+    /// Group is not currently frozen.
+    GroupNotFrozen = 73,
+    /// Snapshot taken too soon; min_snapshot_interval_ledgers not elapsed (#243).
+    SnapshotTooSoon = 72,
 }

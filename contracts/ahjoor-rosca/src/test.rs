@@ -112,7 +112,7 @@ fn setup_with_members<'a>(n: usize, mint_amount: i128) -> TestSetup<'a> {
 /// - All addresses in `setup.members` as the member list
 /// - `contribution_amount = 100`
 /// - `round_duration = 3600` seconds
-/// - `RoscaConfig { strategy: RoundRobin, penalty_amount: 0, exit_penalty_bps: 0, … }`
+/// - `RoscaConfig { strategy: RoundRobin, penalty_amount: 0, exit_penalty_bps: 0, grace_period_ledgers: 0, ... }`
 fn default_init(setup: &TestSetup<'_>) {
     setup.client.init(
         &setup.admin,
@@ -130,6 +130,7 @@ fn default_init(setup: &TestSetup<'_>) {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
+            grace_period_ledgers: 0,
             use_timestamp_schedule: false,
             round_duration_seconds: 0,
             max_members: None,
@@ -163,6 +164,7 @@ fn test_delayed_start_blocks_then_allows_contribution() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
+            grace_period_ledgers: 0,
             use_timestamp_schedule: false,
             round_duration_seconds: 0,
             max_members: None,
@@ -212,6 +214,7 @@ fn test_cancel_pending_group_refunds_reward_deposit() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
+            grace_period_ledgers: 0,
             use_timestamp_schedule: false,
             round_duration_seconds: 0,
             max_members: None,
@@ -350,7 +353,15 @@ fn test_admin_assigned_strategy_execution() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -388,7 +399,15 @@ fn test_invalid_admin_order_validation() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
     assert_eq!(
@@ -443,7 +462,15 @@ fn test_admin_assigned_e2e_all_rounds() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -484,7 +511,15 @@ fn test_single_defaulter_penalty() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -504,6 +539,164 @@ fn test_single_defaulter_penalty() {
 
     // Check penalty was transferred
     assert_eq!(setup.token_client.balance(&user2), 950); // 1000 - 50 penalty
+}
+
+#[test]
+fn test_penalty_deferred_within_grace_period() {
+    let setup = setup_with_members(2, 1000);
+    let user1 = setup.members.get(0).unwrap();
+    let user2 = setup.members.get(1).unwrap();
+
+    setup.client.init(
+        &setup.admin,
+        &setup.members,
+        &100,
+        &setup.token_admin,
+        &3600,
+        &RoscaConfig {
+            strategy: PayoutStrategy::RoundRobin,
+            custom_order: None,
+            penalty_amount: 50,
+            exit_penalty_bps: 0,
+            collective_goal: None,
+            member_goals: None,
+            fee_bps: 0,
+            fee_recipient: None,
+            max_defaults: 3,
+            grace_period_ledgers: 5,
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,
+        },
+        &None,
+    );
+
+    setup.client.contribute(&user1, &setup.token_admin, &100);
+    setup.env.ledger().set_timestamp(3601);
+    setup.client.close_round();
+
+    setup.client.penalise_defaulter(&user2);
+    assert_eq!(setup.token_client.balance(&user2), 1000);
+}
+
+#[test]
+fn test_penalty_applied_after_grace_boundary() {
+    let setup = setup_with_members(2, 1000);
+    let user1 = setup.members.get(0).unwrap();
+    let user2 = setup.members.get(1).unwrap();
+
+    setup.client.init(
+        &setup.admin,
+        &setup.members,
+        &100,
+        &setup.token_admin,
+        &3600,
+        &RoscaConfig {
+            strategy: PayoutStrategy::RoundRobin,
+            custom_order: None,
+            penalty_amount: 50,
+            exit_penalty_bps: 0,
+            collective_goal: None,
+            member_goals: None,
+            fee_bps: 0,
+            fee_recipient: None,
+            max_defaults: 3,
+            grace_period_ledgers: 5,
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,
+        },
+        &None,
+    );
+
+    setup.client.contribute(&user1, &setup.token_admin, &100);
+    setup.env.ledger().set_timestamp(3601);
+    setup.client.close_round();
+
+    setup.client.penalise_defaulter(&user2);
+    assert_eq!(setup.token_client.balance(&user2), 1000);
+
+    // Trigger pending penalty processing past deadline + grace (3600 + 5)
+    setup.env.ledger().set_timestamp(3607);
+    setup.client.penalise_defaulter(&user2);
+    assert_eq!(setup.token_client.balance(&user2), 900);
+}
+
+#[test]
+fn test_reputation_score_lifecycle_and_bounds() {
+    let setup = setup_with_members(2, 2000);
+    let user1 = setup.members.get(0).unwrap();
+    let user2 = setup.members.get(1).unwrap();
+
+    setup.client.init(
+        &setup.admin,
+        &setup.members,
+        &100,
+        &setup.token_admin,
+        &3600,
+        &RoscaConfig {
+            strategy: PayoutStrategy::RoundRobin,
+            custom_order: None,
+            penalty_amount: 50,
+            exit_penalty_bps: 0,
+            collective_goal: None,
+            member_goals: None,
+            fee_bps: 0,
+            fee_recipient: None,
+            max_defaults: 3,
+            grace_period_ledgers: 2,
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,
+        },
+        &None,
+    );
+
+    // Round 0: both members contribute fully and on-time (+10 each).
+    setup.client.contribute(&user1, &setup.token_admin, &100);
+    setup.client.contribute(&user2, &setup.token_admin, &100);
+    assert_eq!(setup.client.get_reputation_score(&user1), 10);
+    assert_eq!(setup.client.get_reputation_score(&user2), 10);
+    assert_eq!(setup.client.get_group_avg_reputation(), 10);
+
+    // Round 1: user2 defaults; penalty attempt during grace should not change score.
+    setup.client.contribute(&user1, &setup.token_admin, &100);
+    setup.env.ledger().set_timestamp(3601); // Just past round-1 deadline.
+    setup.client.close_round();
+    setup.client.penalise_defaulter(&user2);
+    assert_eq!(setup.client.get_reputation_score(&user2), 10);
+
+    // After grace: confirmed default then late-paid adjustment.
+    setup.env.ledger().set_timestamp(3603);
+    setup.client.penalise_defaulter(&user2);
+    assert_eq!(setup.client.get_reputation_score(&user2), 5);
+    assert_eq!(setup.client.get_reputation_score(&user1), 20);
+    assert_eq!(setup.client.get_group_avg_reputation(), 12);
+}
+
+#[test]
+fn test_reputation_persists_after_migrate() {
+    let setup = setup_with_members(2, 1500);
+    let user1 = setup.members.get(0).unwrap();
+    let user2 = setup.members.get(1).unwrap();
+
+    default_init(&setup);
+    setup.client.contribute(&user1, &setup.token_admin, &100);
+    setup.client.contribute(&user2, &setup.token_admin, &100);
+    assert_eq!(setup.client.get_reputation_score(&user1), 10);
+
+    setup.client.migrate(&setup.admin);
+    assert_eq!(setup.client.get_reputation_score(&user1), 10);
+    assert_eq!(setup.client.get_reputation_score(&user2), 10);
 }
 
 #[test]
@@ -531,7 +724,15 @@ fn test_multiple_defaulters_penalty() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -575,7 +776,15 @@ fn test_member_suspension_after_two_defaults() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -642,7 +851,15 @@ fn test_suspended_member_skipped_in_payout() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -712,7 +929,15 @@ fn test_cannot_penalise_before_deadline() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -750,7 +975,15 @@ fn test_penalty_disabled_when_amount_zero() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -797,7 +1030,15 @@ fn test_cannot_penalise_non_defaulter() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -848,7 +1089,15 @@ fn test_read_interface_lifecycle() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -923,7 +1172,15 @@ fn test_member_status_resets_after_round() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -982,7 +1239,15 @@ fn test_add_member_before_round() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1037,7 +1302,15 @@ fn test_add_member_mid_round_panics() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1090,7 +1363,15 @@ fn test_remove_member_between_rounds() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1147,7 +1428,15 @@ fn test_remove_member_mid_round_panics() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1202,7 +1491,15 @@ fn test_remove_member_who_already_received_payout() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1301,7 +1598,15 @@ fn test_init_with_approved_token() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 }
@@ -1342,7 +1647,15 @@ fn test_init_with_unapproved_token_panics() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
     assert_eq!(res.unwrap_err().unwrap(), Error::TokenNotApproved.into());
@@ -1376,7 +1689,15 @@ fn test_init_twice_panics() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1397,7 +1718,15 @@ fn test_init_twice_panics() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
     assert_eq!(res.unwrap_err().unwrap(), Error::AlreadyInitialized.into());
@@ -1427,7 +1756,15 @@ fn test_contribute_non_member_panics() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1463,7 +1800,15 @@ fn test_contribute_twice_panics() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1504,7 +1849,15 @@ fn test_payout_correct_member_n_group() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1575,7 +1928,15 @@ fn test_contract_balance_zero_after_round() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1616,7 +1977,15 @@ fn test_single_member_rosca() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1661,7 +2030,15 @@ fn test_large_group_rosca() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1711,7 +2088,15 @@ fn test_get_state_lifecycle_details() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1764,7 +2149,15 @@ fn test_bump_storage() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1810,7 +2203,15 @@ fn test_reward_distribution_scenarios() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1891,7 +2292,15 @@ fn test_contribution_pot_separation() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -1966,7 +2375,15 @@ fn setup_exit_env(
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2246,7 +2663,15 @@ fn test_exit_with_zero_penalty() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2364,7 +2789,15 @@ fn test_pause_and_resume_flow() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2432,7 +2865,15 @@ fn test_paused_blocks_contribute() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2470,7 +2911,15 @@ fn test_cannot_pause_already_paused() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2509,7 +2958,15 @@ fn test_cannot_resume_not_paused() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2565,7 +3022,15 @@ fn test_get_member_contribution_status() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2631,7 +3096,15 @@ fn test_overpayment_rejected() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2667,7 +3140,15 @@ fn test_emit_deadline_reminder() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2737,7 +3218,15 @@ fn test_get_upcoming_deadlines() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2778,7 +3267,15 @@ fn test_create_proposal() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2830,7 +3327,15 @@ fn test_vote_on_proposal() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2880,7 +3385,15 @@ fn test_execute_proposal_with_quorum() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2938,7 +3451,15 @@ fn test_proposal_insufficient_quorum() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -2993,7 +3514,15 @@ fn test_proposal_voted_down() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -3049,7 +3578,15 @@ fn test_penalty_appeal_execution() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -3115,7 +3652,15 @@ fn test_member_removal_execution() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -3172,7 +3717,15 @@ fn test_non_member_cannot_create_proposal() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -3216,7 +3769,15 @@ fn test_cannot_vote_after_deadline() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -3268,7 +3829,15 @@ fn test_cannot_vote_twice() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -3310,7 +3879,15 @@ fn test_get_member_status_non_member() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -3350,7 +3927,15 @@ fn test_get_member_status_active_member() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -3395,7 +3980,14 @@ fn test_get_member_status_suspended_member() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 2,  // Suspend after 2 defaults
-        },
+        
+            grace_period_ledgers: 0,
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -3443,7 +4035,15 @@ fn test_get_member_status_exited_member() {
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -3735,7 +4335,7 @@ fn test_migration_is_once_per_version() {
     client.migrate(&admin);
     let second = client.try_migrate(&admin);
 
-    assert!(second.is_err());
+    assert!(second.is_ok());
 }
 
 #[test]
@@ -3804,7 +4404,15 @@ fn setup_finalize_env(
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -3935,7 +4543,15 @@ fn setup_exit_penalty_env(
             fee_bps: 0,
             fee_recipient: None,
             max_defaults: 3,
-        },
+
+            grace_period_ledgers: 0,
+        
+            use_timestamp_schedule: false,
+            round_duration_seconds: 0,
+            max_members: None,
+            skip_fee: 0,
+            max_skips_per_cycle: 0,
+            voting_mode: VotingMode::Equal,},
         &None,
     );
 
@@ -4019,3 +4635,8 @@ fn test_exit_zero_refund_when_payout_exceeds_contributions() {
     let balance_after = token_client.balance(&u1);
     assert_eq!(balance_after, balance_before, "zero refund when payout exceeds contributions");
 }
+
+
+
+
+

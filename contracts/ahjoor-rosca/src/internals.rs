@@ -1,4 +1,4 @@
-use crate::{errors::Error, events, audit_trail, ContributionEntry, DataKey, DataKey2, PersistentKey, PayoutRecord, types::{InsuranceClaim, InsuranceCoverageMode}};
+use crate::{errors::{Error, ExtError}, events, audit_trail, ContributionEntry, DataKey, DataKey2, PersistentKey, PayoutRecord, types::{InsuranceClaim, InsuranceCoverageMode}};
 use soroban_sdk::{panic_with_error, token, Address, Env, Map, Vec};
 
 const PERSISTENT_LIFETIME_THRESHOLD: u32 = 100_000;
@@ -14,6 +14,18 @@ pub(crate) fn check_not_paused(env: &Env) {
         .unwrap_or(false);
     if is_paused {
         panic_with_error!(env, Error::ContractPaused);
+    }
+}
+
+/// Panics if the group is currently frozen by the contract-level admin.
+pub(crate) fn check_not_frozen(env: &Env) {
+    let is_frozen: bool = env
+        .storage()
+        .instance()
+        .get(&DataKey2::IsFrozen)
+        .unwrap_or(false);
+    if is_frozen {
+        panic_with_error!(env, ExtError::GroupFrozen);
     }
 }
 

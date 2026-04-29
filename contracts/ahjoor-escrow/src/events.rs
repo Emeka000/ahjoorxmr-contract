@@ -801,3 +801,142 @@ pub struct EscrowToppedUp {
 pub fn emit_escrow_topped_up(e: &Env, escrow_id: u32, added_amount: i128, new_total: i128, buyer: Address) {
     EscrowToppedUp { escrow_id, added_amount, new_total, buyer }.publish(e);
 }
+
+// --- Issue #237: Seller Performance Collateral ---
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct CollateralDeposited {
+    pub escrow_id: u32,
+    pub seller: Address,
+    pub amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct CollateralForfeited {
+    pub escrow_id: u32,
+    pub amount: i128,
+    pub awarded_to_buyer: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct CollateralReturned {
+    pub escrow_id: u32,
+    pub seller: Address,
+    pub amount: i128,
+}
+
+pub fn emit_collateral_deposited(e: &Env, escrow_id: u32, seller: Address, amount: i128) {
+    CollateralDeposited { escrow_id, seller, amount }.publish(e);
+}
+pub fn emit_collateral_forfeited(e: &Env, escrow_id: u32, amount: i128, awarded_to_buyer: Address) {
+    CollateralForfeited { escrow_id, amount, awarded_to_buyer }.publish(e);
+}
+pub fn emit_collateral_returned(e: &Env, escrow_id: u32, seller: Address, amount: i128) {
+    CollateralReturned { escrow_id, seller, amount }.publish(e);
+// --- Issue #241: Delivery Proof Hash ---
+
+/// Event: Seller submitted a delivery proof; auto_released indicates if escrow was released.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct DeliveryProofSubmitted {
+    pub escrow_id: u32,
+    pub seller: Address,
+    pub proof_hash: BytesN<32>,
+    pub auto_released: bool,
+}
+
+pub fn emit_delivery_proof_submitted(
+    e: &Env,
+    escrow_id: u32,
+    seller: Address,
+    proof_hash: BytesN<32>,
+    auto_released: bool,
+) {
+    DeliveryProofSubmitted {
+        escrow_id,
+        seller,
+        proof_hash,
+        auto_released,
+// #244: Seller Role Transfer Veto Events
+
+pub fn emit_seller_transfer_proposed(e: &Env, escrow_id: u32, original_seller: Address, new_seller: Address, veto_deadline: u32) {
+    e.events().publish(
+        (soroban_sdk::Symbol::new(e, "SellerTransferProposed"),),
+        (escrow_id, original_seller, new_seller, veto_deadline),
+    );
+}
+
+pub fn emit_seller_transfer_vetoed(e: &Env, escrow_id: u32, buyer: Address, refund_amount: i128) {
+    e.events().publish(
+        (soroban_sdk::Symbol::new(e, "SellerTransferVetoed"),),
+        (escrow_id, buyer, refund_amount),
+    );
+}
+
+pub fn emit_seller_transfer_approved(e: &Env, escrow_id: u32, new_seller: Address) {
+    e.events().publish(
+        (soroban_sdk::Symbol::new(e, "SellerTransferApproved"),),
+        (escrow_id, new_seller),
+    );
+}
+
+pub fn emit_seller_transfer_expired_approved(e: &Env, escrow_id: u32, new_seller: Address) {
+    e.events().publish(
+        (soroban_sdk::Symbol::new(e, "SellerTransferExpired"),),
+        (escrow_id, new_seller),
+    );
+// --- Issue #146: Post-Resolution Rating System ---
+
+/// Event: Rating submitted after escrow completion
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct RatingSubmitted {
+    pub escrow_id: u32,
+    pub rater: Address,
+    pub ratee: Address,
+    pub rating: u32,
+    pub comment_hash: Option<BytesN<32>>,
+}
+
+pub fn emit_rating_submitted(
+    e: &Env,
+    escrow_id: u32,
+    rater: Address,
+    ratee: Address,
+    rating: u32,
+    comment_hash: Option<BytesN<32>>,
+) {
+    RatingSubmitted {
+        escrow_id,
+        rater,
+        ratee,
+        rating,
+        comment_hash,
+    }
+    .publish(e);
+}
+
+// --- Issue #219: Multi-Party Split Release ---
+
+/// Event: Multi-seller escrow created with explicit payee list and shares
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MultiSellerEscrowCreated {
+    pub escrow_id: u32,
+    pub sellers_count: u32,
+}
+
+pub fn emit_multi_seller_escrow_created(
+    e: &Env,
+    escrow_id: u32,
+    sellers: soroban_sdk::Vec<(Address, u32)>,
+) {
+    MultiSellerEscrowCreated {
+        escrow_id,
+        sellers_count: sellers.len(),
+    }
+    .publish(e);
+}

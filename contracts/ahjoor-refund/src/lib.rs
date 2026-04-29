@@ -74,6 +74,15 @@ pub enum RefundStatus {
     PartiallyApproved = 7,
 }
 
+/// #238: Priority label for refund requests.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[contracttype]
+pub enum Priority {
+    High = 0,
+    Medium = 1,
+    Low = 2,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Refund {
@@ -93,6 +102,8 @@ pub struct Refund {
     pub auto_approved_source: Option<String>, // "whitelist" or "dispute_window"
     pub escrow_id: Option<u32>,                // For cross-contract escrow refunds
     pub fee_amount: Option<i128>,              // Fee deducted on processing
+    /// #238: Priority label; defaults to Medium.
+    pub priority: Priority,
 }
 
 #[contracttype]
@@ -175,10 +186,14 @@ pub enum DataKey {
     CounterOffer(u32),
     /// Configurable counter-offer expiry window in seconds
     CounterOfferExpirySeconds,
+    /// #217: admin-configurable max batch size for batch refund operations
+    MaxBatchSize,
     /// Per-merchant auto-approval threshold amount (#228)
     AutoApproveThreshold(Address),
     /// Global fraud score cap for auto-approval (#228)
     AutoApproveFraudScoreCap,
+    /// #238: Sorted admin queue (Vec<u32> of refund IDs ordered by priority then timestamp)
+    AdminRefundQueue,
 }
 
 mod events;
@@ -193,6 +208,16 @@ pub struct CounterOffer {
 }
 
 const DEFAULT_COUNTER_OFFER_EXPIRY_SECONDS: u64 = 48 * 60 * 60; // 48 hours
+
+const DEFAULT_MAX_BATCH_SIZE: u32 = 20;
+
+/// Result of a batch refund operation (#217).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchRefundResult {
+    pub processed: Vec<u32>,
+    pub skipped: Vec<u32>,
+}
 
 /// Optional extended configuration for `initialize`.
 /// Groups the extra parameters that would otherwise exceed Soroban's 10-parameter limit.
@@ -529,14 +554,8 @@ impl AhjoorRefundContract {
             auto_approved_source: auto_source,
             escrow_id: None,
             fee_amount: None,
+            priority: Priority::Medium,
         };
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Refund(refund_id), &refund);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Refund(refund_id),
-            PERSISTENT_LIFETIME_THRESHOLD,
             PERSISTENT_BUMP_AMOUNT,
         );
 
@@ -818,6 +837,7 @@ impl AhjoorRefundContract {
             auto_approved_source: Some(String::from_str(&env, "merchant_direct")),
             escrow_id: None,
             fee_amount: None,
+            priority: Priority::Medium,
         };
 
         env.storage()
@@ -1977,6 +1997,7 @@ impl AhjoorRefundContract {
             auto_approved_source: None,
             escrow_id: Some(escrow_id),
             fee_amount: None,
+            priority: Priority::Medium,
         };
 
         env.storage()
@@ -2892,20 +2913,12 @@ impl AhjoorRefundContract {
         );
     }
 
-    // --- Issue #245: Partial Refund Approval ---
+    // --- Issue #238: Refund Priority Labelling ---
 
-    /// Merchant approves a partial amount (0 < approved_amount < requested_amount).
-    /// Transfers approved_amount to customer immediately; status set to PartiallyApproved.
-    /// Only valid while refund is in Requested state.
-    pub fn partial_approve_refund(
-        env: Env,
-        merchant: Address,
-        refund_id: u32,
-        approved_amount: i128,
-    ) {
+    /// Admin overrides the priority of any pending refund request.
+    pub fn set_refund_priority(env: Env, admin: Address, refund_id: u32, priority: Priority) {
         Self::require_not_paused(&env);
-        merchant.require_auth();
-
+        Self::require_admin(&env, &admin);
         let mut refund: Refund = env
             .storage()
             .persistent()
@@ -2938,6 +2951,10 @@ impl AhjoorRefundContract {
         refund.approved_at = Some(now);
         refund.processed_at = Some(now);
 
+        if refund.status != RefundStatus::Requested {
+            panic!("Can only set priority on Requested refunds");
+        }
+        refund.priority = priority;
         env.storage()
             .persistent()
             .set(&DataKey::Refund(refund_id), &refund);
@@ -2946,21 +2963,243 @@ impl AhjoorRefundContract {
             PERSISTENT_LIFETIME_THRESHOLD,
             PERSISTENT_BUMP_AMOUNT,
         );
+        events::emit_refund_priority_set(&env, refund_id, priority as u32, admin);
+    // ─── #217: Batch Refund Processing ───────────────────────────────────────
 
-        // Remove from pending queue
-        Self::remove_from_pending_queue(&env, refund_id);
-
-        events::emit_refund_partially_approved(
-            &env,
-            refund_id,
-            merchant,
-            approved_amount,
-            refund.amount,
-            remaining,
-        );
+    /// Admin sets the maximum batch size for batch refund operations.
+    pub fn set_max_batch_size(env: Env, admin: Address, max_batch_size: u32) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can set max batch size");
+        }
+        if max_batch_size == 0 {
+            panic!("Max batch size must be positive");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxBatchSize, &max_batch_size);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Returns pending refunds sorted: High first, then Medium, then Low; within same priority oldest first.
+    /// Returns (page_items, total_pending, has_more).
+    pub fn get_admin_refund_queue(env: Env, page: u32, page_size: u32) -> (Vec<Refund>, u32, bool) {
+        let effective_size = page_size.min(50);
+        let queue: Vec<u32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PendingRefundQueue)
+            .unwrap_or(Vec::new(&env));
+
+        // Collect (priority_ord, requested_at, refund_id) for sorting
+        // priority_ord: High=0, Medium=1, Low=2
+        let mut entries: Vec<(u32, u64, u32)> = Vec::new(&env);
+        for i in 0..queue.len() {
+            let rid = queue.get(i).unwrap();
+            if let Some(r) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Refund>(&DataKey::Refund(rid))
+            {
+                if r.status == RefundStatus::Requested {
+                    let pord = r.priority as u32;
+                    entries.push_back((pord, r.requested_at, rid));
+                }
+            }
+        }
+
+        // Insertion sort by (priority_ord ASC, requested_at ASC)
+        let n = entries.len();
+        for i in 1..n {
+            let mut j = i;
+            while j > 0 {
+                let a = entries.get(j - 1).unwrap();
+                let b = entries.get(j).unwrap();
+                if a.0 > b.0 || (a.0 == b.0 && a.1 > b.1) {
+                    entries.set(j - 1, b);
+                    entries.set(j, a);
+                    j -= 1;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let total = entries.len();
+        let start = (page * effective_size).min(total);
+        let end = (start + effective_size).min(total);
+        let mut result: Vec<Refund> = Vec::new(&env);
+        for i in start..end {
+            let (_, _, rid) = entries.get(i).unwrap();
+            if let Some(r) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Refund>(&DataKey::Refund(rid))
+            {
+                result.push_back(r);
+            }
+        }
+        let has_more = end < total;
+        (result, total, has_more)
+    /// Approve multiple pending refund requests in a single transaction.
+    /// Skips IDs that are not in Requested status rather than reverting.
+    /// Returns a BatchRefundResult with processed and skipped IDs.
+    pub fn batch_approve_refunds(env: Env, admin: Address, refund_ids: Vec<u32>) -> BatchRefundResult {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can batch approve refunds");
+        }
+
+        let max_batch: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxBatchSize)
+            .unwrap_or(DEFAULT_MAX_BATCH_SIZE);
+
+        if refund_ids.len() > max_batch {
+            panic!("Batch size exceeds maximum allowed");
+        }
+
+        let mut processed = Vec::new(&env);
+        let mut skipped = Vec::new(&env);
+        let now = env.ledger().timestamp();
+
+        for i in 0..refund_ids.len() {
+            let refund_id = refund_ids.get(i).unwrap();
+            let maybe_refund: Option<Refund> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Refund(refund_id));
+
+            match maybe_refund {
+                Some(mut refund) if refund.status == RefundStatus::Requested => {
+                    refund.status = RefundStatus::Approved;
+                    refund.approved_at = Some(now);
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::Refund(refund_id), &refund);
+                    env.storage().persistent().extend_ttl(
+                        &DataKey::Refund(refund_id),
+                        PERSISTENT_LIFETIME_THRESHOLD,
+                        PERSISTENT_BUMP_AMOUNT,
+                    );
+                    Self::remove_from_pending_queue(&env, refund_id);
+                    Self::decrement_fraud_score(&env, &refund.customer);
+                    Self::update_stats_on_approve(&env, &refund.merchant);
+                    events::emit_refund_approved(&env, refund_id, admin.clone(), now);
+                    processed.push_back(refund_id);
+                }
+                _ => {
+                    skipped.push_back(refund_id);
+                }
+            }
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        BatchRefundResult { processed, skipped }
+    }
+
+    /// Reject multiple pending refund requests in a single transaction.
+    /// Skips IDs that are not in Requested status rather than reverting.
+    /// Returns a BatchRefundResult with processed and skipped IDs.
+    pub fn batch_reject_refunds(
+        env: Env,
+        admin: Address,
+        refund_ids: Vec<u32>,
+        reason_hash: BytesN<32>,
+    ) -> BatchRefundResult {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can batch reject refunds");
+        }
+
+        let max_batch: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxBatchSize)
+            .unwrap_or(DEFAULT_MAX_BATCH_SIZE);
+
+        if refund_ids.len() > max_batch {
+            panic!("Batch size exceeds maximum allowed");
+        }
+
+        let mut processed = Vec::new(&env);
+        let mut skipped = Vec::new(&env);
+        let now = env.ledger().timestamp();
+
+        for i in 0..refund_ids.len() {
+            let refund_id = refund_ids.get(i).unwrap();
+            let maybe_refund: Option<Refund> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Refund(refund_id));
+
+            match maybe_refund {
+                Some(mut refund) if refund.status == RefundStatus::Requested => {
+                    refund.status = RefundStatus::Rejected;
+                    refund.rejected_at = Some(now);
+                    env.storage()
+                        .persistent()
+                        .set(&DataKey::Refund(refund_id), &refund);
+                    env.storage().persistent().extend_ttl(
+                        &DataKey::Refund(refund_id),
+                        PERSISTENT_LIFETIME_THRESHOLD,
+                        PERSISTENT_BUMP_AMOUNT,
+                    );
+                    Self::remove_from_pending_queue(&env, refund_id);
+                    Self::increment_fraud_score(&env, &refund.customer, Symbol::new(&env, "admin_rejected"));
+                    Self::update_stats_on_reject(&env, &refund.merchant);
+                    events::emit_refund_rejected(
+                        &env,
+                        refund_id,
+                        admin.clone(),
+                        String::from_str(&env, "batch_reject"),
+                        now,
+                    );
+                    processed.push_back(refund_id);
+                }
+                _ => {
+                    skipped.push_back(refund_id);
+                }
+            }
+        }
+
+        // Store reason_hash for audit (emit as event)
+        env.events().publish(
+            (Symbol::new(&env, "BatchRejectReason"),),
+            (admin.clone(), reason_hash),
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        BatchRefundResult { processed, skipped }
     }
 }
 
