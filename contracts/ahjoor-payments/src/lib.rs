@@ -109,6 +109,14 @@ pub enum Error {
     ReferralAlreadyExists = 15,
     /// No pending commission to claim (#242)
     NoCommissionToClaim = 16,
+    /// Slippage tolerance exceeded on dynamic payment settlement (#246)
+    SlippageExceeded = 15,
+    /// Oracle address is not on the admin whitelist (#246)
+    OracleNotWhitelisted = 16,
+    /// Dynamic payment has expired (#246)
+    DynamicPaymentExpired = 17,
+    /// Customer cumulative spend would exceed the merchant-configured cap (#235)
+    CustomerSpendLimitExceeded = 15,
 }
 
 /// Per-merchant withdrawal rate limit config (#231).
@@ -134,6 +142,20 @@ pub struct ReferralRecord {
     pub referrer: Address,
     pub registered_at_ledger: u32,
     pub window_ledgers: u32,
+/// Per-customer (or default) spend cap config (#235).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SpendLimit {
+    pub amount: i128,
+    pub window_seconds: u64,
+}
+
+/// Tracks cumulative spend within the current rolling window (#235).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CustomerSpendWindow {
+    pub window_start: u64,
+    pub spent: i128,
 }
 
 /// Direction for oracle price condition (#125)
@@ -371,6 +393,22 @@ pub struct SlippageConfig {
     pub max_bps: u32,
 }
 
+/// Oracle-backed dynamic payment record (#246).
+/// The settlement amount is computed at complete_payment time using the oracle rate.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DynamicPayment {
+    pub payment_id: u32,
+    pub fiat_amount: i128,
+    pub fiat_currency: Symbol,
+    pub oracle_address: Address,
+    pub token: Address,
+    pub slippage_bps: u32,
+    /// Oracle price at creation time (scaled by 10^7), used for slippage check at settlement
+    pub creation_rate: i128,
+    pub expiry: u64,
+}
+
 /// Per-merchant volume cap configuration (#131)
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -531,9 +569,40 @@ pub enum DataKey {
     ReferralRecord(Address),
     /// Persistent: pending commission balance for a referrer (#242)
     PendingCommission(Address),
+    /// Persistent: dynamic payment record (#246)
+    DynamicPayment(u32),
+    /// Instance: admin-maintained oracle whitelist (#246)
+    OracleWhitelist,
+    /// Persistent: per-(merchant,customer) spend limit override (#235)
+    CustomerSpendLimit(Address, Address),
+    /// Persistent: merchant-level default spend limit (#235)
+    DefaultSpendLimit(Address),
+    /// Persistent: per-(merchant,customer) rolling spend window state (#235)
+    CustomerSpendWindowState(Address, Address),
+    /// #216: recurring invoice counter
+    RecurringInvoiceCounter,
+    /// #216: recurring invoice record
+    RecurringInvoice(u32),
 }
 
 mod events;
+
+/// #216: Recurring invoice schedule.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecurringInvoice {
+    pub id: u32,
+    pub merchant: Address,
+    pub customer: Address,
+    pub amount: i128,
+    pub token: Address,
+    pub interval_seconds: u64,
+    pub max_cycles: u32,
+    pub cycles_triggered: u32,
+    pub next_due_at: u64,
+    pub reference_hash: Option<BytesN<32>>,
+    pub active: bool,
+}
 
 #[contract]
 pub struct AhjoorPaymentsContract;
@@ -4282,6 +4351,11 @@ impl AhjoorPaymentsContract {
             panic!("Payment has expired");
         }
 
+        // #246: Recompute token amount at current oracle rate for dynamic payments
+        Self::settle_dynamic_payment_if_needed(env, &mut payment);
+        // #235: Check customer spend limit before finalizing
+        Self::check_and_update_customer_spend_limit(env, &payment.merchant, &payment.customer, payment.amount);
+
         Self::finalize_payment(env, payment_id, &mut payment);
     }
 
@@ -5738,6 +5812,291 @@ impl AhjoorPaymentsContract {
     // =========================================================================
     // #242: Merchant Referral Commission Tracking
     // =========================================================================
+    // #235: Merchant-Level Customer Spending Limits
+    // =========================================================================
+
+    /// Merchant sets a per-customer spend cap within a rolling window.
+    pub fn set_customer_spend_limit(
+    // ─── #216: Recurring Invoice Scheduling ──────────────────────────────────
+
+    /// Merchant creates a recurring invoice schedule.
+    /// `max_cycles` = 0 means unlimited.
+    pub fn create_recurring_invoice(
+        env: Env,
+        merchant: Address,
+        customer: Address,
+        amount: i128,
+        window_seconds: u64,
+    ) {
+        Self::require_not_paused(&env);
+        merchant.require_auth();
+        if amount <= 0 {
+            panic!("Spend limit amount must be positive");
+        }
+        if window_seconds == 0 {
+            panic!("Window seconds must be positive");
+        }
+        let key = DataKey::CustomerSpendLimit(merchant.clone(), customer.clone());
+        let limit = SpendLimit { amount, window_seconds };
+        env.storage().persistent().set(&key, &limit);
+        env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        events::emit_customer_spend_limit_set(&env, merchant, customer, amount, window_seconds);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Merchant removes a per-customer spend cap.
+    pub fn remove_customer_spend_limit(env: Env, merchant: Address, customer: Address) {
+        Self::require_not_paused(&env);
+        merchant.require_auth();
+        let key = DataKey::CustomerSpendLimit(merchant.clone(), customer.clone());
+        env.storage().persistent().remove(&key);
+        events::emit_customer_spend_limit_removed(&env, merchant, customer);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Merchant sets a global default spend cap applied to all customers without an individual override.
+    pub fn set_default_spend_limit(
+        env: Env,
+        merchant: Address,
+        amount: i128,
+        window_seconds: u64,
+    ) {
+        Self::require_not_paused(&env);
+        merchant.require_auth();
+        if amount <= 0 {
+            panic!("Spend limit amount must be positive");
+        }
+        if window_seconds == 0 {
+            panic!("Window seconds must be positive");
+        }
+        let key = DataKey::DefaultSpendLimit(merchant.clone());
+        let limit = SpendLimit { amount, window_seconds };
+        env.storage().persistent().set(&key, &limit);
+        env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        events::emit_default_spend_limit_set(&env, merchant, amount, window_seconds);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get the per-customer spend limit for a merchant+customer pair.
+    pub fn get_customer_spend_limit(env: Env, merchant: Address, customer: Address) -> Option<SpendLimit> {
+        env.storage().persistent().get(&DataKey::CustomerSpendLimit(merchant, customer))
+    }
+
+    /// Get the default spend limit for a merchant.
+    pub fn get_default_spend_limit(env: Env, merchant: Address) -> Option<SpendLimit> {
+        env.storage().persistent().get(&DataKey::DefaultSpendLimit(merchant))
+    }
+
+    /// Check and update the customer spend window. Panics with CustomerSpendLimitExceeded if cap would be breached.
+    fn check_and_update_customer_spend_limit(env: &Env, merchant: &Address, customer: &Address, amount: i128) {
+        // Individual override takes priority over default
+        let limit_opt: Option<SpendLimit> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::CustomerSpendLimit(merchant.clone(), customer.clone()))
+            .or_else(|| env.storage().persistent().get(&DataKey::DefaultSpendLimit(merchant.clone())));
+
+        let limit = match limit_opt {
+            Some(l) => l,
+            None => return, // No limit configured
+        };
+
+        let state_key = DataKey::CustomerSpendWindowState(merchant.clone(), customer.clone());
+        let now = env.ledger().timestamp();
+
+        let mut state: CustomerSpendWindow = env
+            .storage()
+            .persistent()
+            .get(&state_key)
+            .unwrap_or(CustomerSpendWindow { window_start: now, spent: 0 });
+
+        // Reset window if expired
+        if now >= state.window_start + limit.window_seconds {
+            state = CustomerSpendWindow { window_start: now, spent: 0 };
+        }
+
+        let new_total = state.spent.checked_add(amount).expect("Spend overflow");
+        if new_total > limit.amount {
+            events::emit_customer_spend_limit_exceeded(env, merchant.clone(), customer.clone(), new_total, limit.amount);
+            panic_with_error!(env, Error::CustomerSpendLimitExceeded);
+        }
+
+        state.spent = new_total;
+        env.storage().persistent().set(&state_key, &state);
+        env.storage().persistent().extend_ttl(&state_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        token: Address,
+        interval_seconds: u64,
+        max_cycles: u32,
+        reference_hash: Option<BytesN<32>>,
+    ) -> u32 {
+        Self::require_not_paused(&env);
+        merchant.require_auth();
+
+        if amount <= 0 {
+            panic!("Amount must be positive");
+        }
+        if interval_seconds == 0 {
+            panic!("Interval must be positive");
+        }
+
+        Self::require_token_allowed(&env, &token);
+        Self::require_merchant_approved(&env, &merchant);
+
+        let mut counter: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RecurringInvoiceCounter)
+            .unwrap_or(0);
+        let invoice_id = counter;
+        counter += 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::RecurringInvoiceCounter, &counter);
+
+        let now = env.ledger().timestamp();
+        let invoice = RecurringInvoice {
+            id: invoice_id,
+            merchant: merchant.clone(),
+            customer: customer.clone(),
+            amount,
+            token,
+            interval_seconds,
+            max_cycles,
+            cycles_triggered: 0,
+            next_due_at: now,
+            reference_hash,
+            active: true,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::RecurringInvoice(invoice_id), &invoice);
+        env.storage().persistent().extend_ttl(
+            &DataKey::RecurringInvoice(invoice_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_recurring_invoice_created(&env, invoice_id, merchant, customer, amount);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        invoice_id
+    }
+
+    /// Trigger the next invoice cycle, creating a standard Payment entry.
+    /// Callable by anyone (merchant, keeper, etc.) when the interval has elapsed.
+    /// Returns the new payment_id.
+    pub fn trigger_invoice_cycle(env: Env, invoice_id: u32) -> u32 {
+        Self::require_not_paused(&env);
+
+        let mut invoice: RecurringInvoice = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecurringInvoice(invoice_id))
+            .expect("Recurring invoice not found");
+
+        if !invoice.active {
+            panic!("Recurring invoice is cancelled");
+        }
+
+        let now = env.ledger().timestamp();
+        if now < invoice.next_due_at {
+            panic!("Invoice interval has not elapsed");
+        }
+
+        if invoice.max_cycles > 0 && invoice.cycles_triggered >= invoice.max_cycles {
+            panic!("Max cycles reached");
+        }
+
+        // Create a standard Payment entry (funds transferred from customer)
+        let payment_id = Self::create_payment_with_options(
+            env.clone(),
+            invoice.customer.clone(),
+            invoice.merchant.clone(),
+            invoice.amount,
+            invoice.token.clone(),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        invoice.cycles_triggered += 1;
+        invoice.next_due_at = now + invoice.interval_seconds;
+
+        // Auto-complete if max_cycles reached
+        if invoice.max_cycles > 0 && invoice.cycles_triggered >= invoice.max_cycles {
+            invoice.active = false;
+            events::emit_recurring_invoice_completed(&env, invoice_id);
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::RecurringInvoice(invoice_id), &invoice);
+        env.storage().persistent().extend_ttl(
+            &DataKey::RecurringInvoice(invoice_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_invoice_cycle_triggered(&env, invoice_id, payment_id, invoice.cycles_triggered);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        payment_id
+    }
+
+    /// Cancel a recurring invoice. Callable by merchant or customer.
+    pub fn cancel_recurring_invoice(env: Env, caller: Address, invoice_id: u32) {
+        Self::require_not_paused(&env);
+        caller.require_auth();
+
+        let mut invoice: RecurringInvoice = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RecurringInvoice(invoice_id))
+            .expect("Recurring invoice not found");
+
+        if caller != invoice.merchant && caller != invoice.customer {
+            panic!("Only merchant or customer can cancel");
+        }
+
+        if !invoice.active {
+            panic!("Recurring invoice is already cancelled");
+        }
+
+        invoice.active = false;
+        env.storage()
+            .persistent()
+            .set(&DataKey::RecurringInvoice(invoice_id), &invoice);
+        env.storage().persistent().extend_ttl(
+            &DataKey::RecurringInvoice(invoice_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_recurring_invoice_cancelled(&env, invoice_id, caller);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get a recurring invoice by ID.
+    pub fn get_recurring_invoice(env: Env, invoice_id: u32) -> RecurringInvoice {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RecurringInvoice(invoice_id))
+            .expect("Recurring invoice not found")
+    }
+
+}
 
     /// Admin sets global referral terms.
     pub fn set_referral_config(env: Env, admin: Address, commission_bps: u32, window_ledgers: u32) {
@@ -5857,5 +6216,7 @@ mod test_merchant_ban;
 
 #[cfg(test)]
 mod test_referral;
+mod test_dynamic_settlement;
+mod test_spending_limit;
 
 pub use events::*;
