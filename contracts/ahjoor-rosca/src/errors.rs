@@ -154,4 +154,6 @@ pub enum ExtError {
     GroupFrozen = 72,
     /// Group is not currently frozen.
     GroupNotFrozen = 73,
+    /// Snapshot taken too soon; min_snapshot_interval_ledgers not elapsed (#243).
+    SnapshotTooSoon = 72,
 }

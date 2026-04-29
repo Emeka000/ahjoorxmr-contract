@@ -1181,4 +1181,17 @@ pub fn emit_group_frozen(e: &Env, group_id: u32, reason_hash: BytesN<32>, frozen
 
 pub fn emit_group_unfrozen(e: &Env, group_id: u32, resolution_hash: BytesN<32>, unfrozen_at: u32) {
     GroupUnfrozen { group_id, resolution_hash, unfrozen_at }.publish(e);
+// #243: Group State Snapshot Events
+
+/// Event: Group state snapshot taken
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SnapshotTaken {
+    pub snapshot_id: u32,
+    pub taken_by: Address,
+    pub state_hash: BytesN<32>,
+}
+
+pub fn emit_snapshot_taken(e: &Env, snapshot_id: u32, taken_by: Address, state_hash: BytesN<32>) {
+    SnapshotTaken { snapshot_id, taken_by, state_hash }.publish(e);
 }
