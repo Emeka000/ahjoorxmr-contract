@@ -264,6 +264,8 @@ pub enum DataKey2 {
     CatchUpDebt,             // Map<Address, i128> — catch-up contributions owed
     StartAt,                 // u64
     GroupActivationEmitted,  // bool
+    // #236: Group Activity Freeze
+    IsFrozen,                // bool — group is frozen by contract-level admin
 }
 
 /// Persistent storage keys — kept separate because DataKey was hitting
@@ -272,6 +274,18 @@ pub enum DataKey2 {
 #[contracttype]
 pub enum PersistentKey {
     RoundHistory, // Vec<PayoutRecord> — grows every round
+    FreezeLog,    // Vec<FreezeRecord> — append-only freeze audit log
+}
+
+/// Record of a single freeze/unfreeze cycle for a group.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FreezeRecord {
+    pub frozen_at_ledger: u32,
+    pub frozen_by: Address,
+    pub reason_hash: BytesN<32>,
+    pub unfrozen_at_ledger: Option<u32>,
+    pub resolution_hash: Option<BytesN<32>>,
     /// Append-only snapshot log (#243)
     SnapshotLog,  // Vec<GroupSnapshot>
     /// Last snapshot ledger for spam guard (#243)

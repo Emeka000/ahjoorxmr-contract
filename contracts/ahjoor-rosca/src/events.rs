@@ -1155,6 +1155,32 @@ pub fn emit_round_duration_applied(e: &Env, round: u32, duration: u64) {
     RoundDurationApplied { round, duration }.publish(e);
 }
 
+// #236: Group Activity Freeze Events
+
+/// Event: Group frozen by contract-level admin
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct GroupFrozen {
+    pub group_id: u32,
+    pub reason_hash: BytesN<32>,
+    pub frozen_at: u32,
+}
+
+/// Event: Group unfrozen by contract-level admin
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct GroupUnfrozen {
+    pub group_id: u32,
+    pub resolution_hash: BytesN<32>,
+    pub unfrozen_at: u32,
+}
+
+pub fn emit_group_frozen(e: &Env, group_id: u32, reason_hash: BytesN<32>, frozen_at: u32) {
+    GroupFrozen { group_id, reason_hash, frozen_at }.publish(e);
+}
+
+pub fn emit_group_unfrozen(e: &Env, group_id: u32, resolution_hash: BytesN<32>, unfrozen_at: u32) {
+    GroupUnfrozen { group_id, resolution_hash, unfrozen_at }.publish(e);
 // #243: Group State Snapshot Events
 
 /// Event: Group state snapshot taken

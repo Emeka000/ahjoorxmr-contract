@@ -673,6 +673,7 @@ impl AhjoorContract {
 
     pub fn contribute(env: Env, contributor: Address, token: Address, amount: i128) {
         internals::check_not_paused(&env);
+        internals::check_not_frozen(&env);
         contributor.require_auth();
 
         let start_at = Self::get_start_time(env.clone());
@@ -1138,6 +1139,7 @@ impl AhjoorContract {
 
     pub fn close_round(env: Env) {
         internals::check_not_paused(&env);
+        internals::check_not_frozen(&env);
         let admin: Address = env
             .storage()
             .instance()
@@ -1218,6 +1220,7 @@ impl AhjoorContract {
     /// Admin only. Panics with `DeadlineNotPassed` if called before the deadline.
     pub fn finalize_round(env: Env) {
         internals::check_not_paused(&env);
+        internals::check_not_frozen(&env);
         let admin: Address = env
             .storage()
             .instance()
@@ -1540,6 +1543,7 @@ impl AhjoorContract {
 
     pub fn add_member(env: Env, new_member: Address) {
         internals::check_not_paused(&env);
+        internals::check_not_frozen(&env);
         let admin: Address = env
             .storage()
             .instance()
@@ -1595,6 +1599,7 @@ impl AhjoorContract {
 
     pub fn remove_member(env: Env, member: Address) {
         internals::check_not_paused(&env);
+        internals::check_not_frozen(&env);
         let admin: Address = env
             .storage()
             .instance()
@@ -5025,6 +5030,113 @@ impl AhjoorContract {
         proposals.get(proposal_id).expect("Merge proposal not found")
     }
 
+    // ── #236: Group Activity Freeze ────────────────────────────────────────────
+
+    /// Contract-level admin freezes all group activity pending investigation.
+    /// All mutating operations (contribute, close_round, finalize_round,
+    /// add_member, remove_member) are blocked while frozen.
+    pub fn freeze_group(env: Env, admin: Address, group_id: u32, reason_hash: BytesN<32>) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic_with_error!(&env, ExtError::OnlyAdminAllowed);
+        }
+
+        let is_frozen: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey2::IsFrozen)
+            .unwrap_or(false);
+        if is_frozen {
+            panic_with_error!(&env, ExtError::GroupFrozen);
+        }
+
+        env.storage().instance().set(&DataKey2::IsFrozen, &true);
+
+        // Append to immutable freeze log in persistent storage.
+        let mut log: Vec<FreezeRecord> = env
+            .storage()
+            .persistent()
+            .get(&PersistentKey::FreezeLog)
+            .unwrap_or(Vec::new(&env));
+        log.push_back(FreezeRecord {
+            frozen_at_ledger: env.ledger().sequence(),
+            frozen_by: admin.clone(),
+            reason_hash: reason_hash.clone(),
+            unfrozen_at_ledger: None,
+            resolution_hash: None,
+        });
+        env.storage().persistent().set(&PersistentKey::FreezeLog, &log);
+        env.storage().persistent().extend_ttl(
+            &PersistentKey::FreezeLog,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_group_frozen(&env, group_id, reason_hash, env.ledger().sequence());
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Contract-level admin unfreezes the group, logging the resolution on-chain.
+    pub fn unfreeze_group(env: Env, admin: Address, group_id: u32, resolution_hash: BytesN<32>) {
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic_with_error!(&env, ExtError::OnlyAdminAllowed);
+        }
+
+        let is_frozen: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey2::IsFrozen)
+            .unwrap_or(false);
+        if !is_frozen {
+            panic_with_error!(&env, ExtError::GroupNotFrozen);
+        }
+
+        env.storage().instance().set(&DataKey2::IsFrozen, &false);
+
+        // Update the last freeze record with unfreeze info.
+        let mut log: Vec<FreezeRecord> = env
+            .storage()
+            .persistent()
+            .get(&PersistentKey::FreezeLog)
+            .unwrap_or(Vec::new(&env));
+        let last_idx = log.len() - 1;
+        let mut record = log.get(last_idx).unwrap();
+        record.unfrozen_at_ledger = Some(env.ledger().sequence());
+        record.resolution_hash = Some(resolution_hash.clone());
+        log.set(last_idx, record);
+        env.storage().persistent().set(&PersistentKey::FreezeLog, &log);
+        env.storage().persistent().extend_ttl(
+            &PersistentKey::FreezeLog,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_group_unfrozen(&env, group_id, resolution_hash, env.ledger().sequence());
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Returns the freeze log (read-only, available even when frozen).
+    pub fn get_freeze_log(env: Env) -> Vec<FreezeRecord> {
+        env.storage()
+            .persistent()
+            .get(&PersistentKey::FreezeLog)
+            .unwrap_or(Vec::new(&env))
+    }
     // =========================================================================
     // #243: On-Chain Group State Snapshot for Immutable Audit
     // =========================================================================
@@ -5136,5 +5248,6 @@ mod test_new_features;
 mod test_skip;
 mod test_quorum;
 mod test_waitlist;
+mod test_group_freeze;
 mod test_snapshot;
 pub use events::*;
