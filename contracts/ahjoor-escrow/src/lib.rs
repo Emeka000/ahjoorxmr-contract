@@ -303,12 +303,19 @@ pub enum DataKey {
     PendingVerdict(u32),
     /// (escrow_id) → (caller, reason_hash) for dispute resolution flag
     ResolutionFlag(u32),
+    /// Amendment proposal for an escrow (escrow_id → AmendmentProposal)
+    AmendmentProposal(u32),
+    /// Amendment proposal nonce counter per escrow (escrow_id → u32)
+    AmendmentNonce(u32),
+    /// Admin-configurable amendment proposal expiry window in seconds
+    AmendmentExpirySeconds,
 }
 
 const MAX_PROTOCOL_FEE_BPS: u32 = 200; // 2%
 const MAX_ARBITER_FEE_BPS: u32 = 1_000; // 10%
 const DEFAULT_RESOLUTION_COOLING_OFF_SECONDS: u64 = 24 * 60 * 60; // 24 hours
 const DEFAULT_SELLER_TRANSFER_VETO_WINDOW: u32 = 100; // ledgers
+const DEFAULT_AMENDMENT_EXPIRY_SECONDS: u64 = 7 * 24 * 60 * 60; // 7 days
 
 /// #244: Pending seller role transfer proposal.
 #[contracttype]
@@ -317,6 +324,31 @@ pub struct SellerTransferProposal {
     pub original_seller: Address,
     pub new_seller: Address,
     pub veto_deadline: u32, // ledger sequence
+}
+
+/// Mutual amendment proposal for post-creation term changes.
+/// Both buyer and seller must sign the same proposal for it to take effect.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AmendmentProposal {
+    /// Incrementing nonce so each proposal is unique even if terms repeat.
+    pub nonce: u32,
+    /// Proposer address (buyer or seller).
+    pub proposer: Address,
+    /// New escrow amount, or None to keep current.
+    pub new_amount: Option<i128>,
+    /// New deadline (unix timestamp), or None to keep current.
+    pub new_deadline: Option<u64>,
+    /// New metadata hash, or None to keep current.
+    pub new_metadata_hash: Option<BytesN<32>>,
+    /// Ledger timestamp when this proposal was created.
+    pub proposed_at: u64,
+    /// Ledger timestamp after which this proposal expires.
+    pub expires_at: u64,
+    /// Whether the buyer has signed this proposal.
+    pub buyer_signed: bool,
+    /// Whether the seller has signed this proposal.
+    pub seller_signed: bool,
 }
 
 /// Verdict recorded by arbiter during cooling-off period.
@@ -4332,6 +4364,298 @@ impl AhjoorEscrowContract {
         }
         let avg_x100 = ((total_score * 100) / count as u64) as u32;
         (avg_x100, count)
+    }
+
+    // ─── Mutual Amendment Protocol ────────────────────────────────────────────
+
+    /// Admin sets the amendment proposal expiry window in seconds.
+    pub fn set_amendment_expiry_seconds(env: Env, admin: Address, expiry_seconds: u64) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can set amendment expiry");
+        }
+        if expiry_seconds == 0 {
+            panic!("Expiry must be positive");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::AmendmentExpirySeconds, &expiry_seconds);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Propose an amendment to escrow terms (amount, deadline, metadata_hash).
+    /// Caller must be the buyer or seller of the escrow.
+    /// At least one field must differ from the current escrow state.
+    /// Replaces any existing pending proposal.
+    pub fn propose_amendment(
+        env: Env,
+        proposer: Address,
+        escrow_id: u32,
+        new_amount: Option<i128>,
+        new_deadline: Option<u64>,
+        new_metadata_hash: Option<BytesN<32>>,
+    ) {
+        Self::require_not_paused(&env);
+        proposer.require_auth();
+
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if proposer != escrow.buyer && proposer != escrow.seller {
+            panic!("Only buyer or seller can propose an amendment");
+        }
+
+        if !Self::is_open_escrow_status(escrow.status) {
+            panic!("Escrow is not active");
+        }
+
+        // Validate at least one field is being changed
+        let amount_changed = new_amount.map_or(false, |a| a != escrow.amount);
+        let deadline_changed = new_deadline.map_or(false, |d| d != escrow.deadline);
+        let hash_changed = new_metadata_hash != escrow.metadata_hash;
+        if !amount_changed && !deadline_changed && !hash_changed {
+            panic!("Amendment must change at least one field");
+        }
+
+        // Validate proposed values
+        if let Some(amount) = new_amount {
+            if amount <= 0 {
+                panic!("Proposed amount must be positive");
+            }
+        }
+        if let Some(deadline) = new_deadline {
+            if deadline <= env.ledger().timestamp() {
+                panic!("Proposed deadline must be in the future");
+            }
+        }
+
+        let expiry_seconds: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AmendmentExpirySeconds)
+            .unwrap_or(DEFAULT_AMENDMENT_EXPIRY_SECONDS);
+
+        let now = env.ledger().timestamp();
+
+        // Increment nonce
+        let nonce: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AmendmentNonce(escrow_id))
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .persistent()
+            .set(&DataKey::AmendmentNonce(escrow_id), &nonce);
+        env.storage().persistent().extend_ttl(
+            &DataKey::AmendmentNonce(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        let buyer_signed = proposer == escrow.buyer;
+        let seller_signed = proposer == escrow.seller;
+
+        let proposal = AmendmentProposal {
+            nonce,
+            proposer: proposer.clone(),
+            new_amount,
+            new_deadline,
+            new_metadata_hash,
+            proposed_at: now,
+            expires_at: now + expiry_seconds,
+            buyer_signed,
+            seller_signed,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::AmendmentProposal(escrow_id), &proposal);
+        env.storage().persistent().extend_ttl(
+            &DataKey::AmendmentProposal(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_amendment_proposed(
+            &env,
+            escrow_id,
+            nonce,
+            proposer,
+            new_amount,
+            new_deadline,
+            new_metadata_hash,
+            now + expiry_seconds,
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Sign an existing amendment proposal.
+    /// Caller must be the buyer or seller (the counterparty of the proposer).
+    /// When both parties have signed, the amendment is applied immediately.
+    pub fn sign_amendment(env: Env, signer: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        signer.require_auth();
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if signer != escrow.buyer && signer != escrow.seller {
+            panic!("Only buyer or seller can sign an amendment");
+        }
+
+        if !Self::is_open_escrow_status(escrow.status) {
+            panic!("Escrow is not active");
+        }
+
+        let mut proposal: AmendmentProposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AmendmentProposal(escrow_id))
+            .expect("No pending amendment proposal");
+
+        if env.ledger().timestamp() > proposal.expires_at {
+            panic!("Amendment proposal has expired");
+        }
+
+        // Record the signature
+        if signer == escrow.buyer {
+            if proposal.buyer_signed {
+                panic!("Buyer has already signed this proposal");
+            }
+            proposal.buyer_signed = true;
+        } else {
+            if proposal.seller_signed {
+                panic!("Seller has already signed this proposal");
+            }
+            proposal.seller_signed = true;
+        }
+
+        // If both parties have signed, apply the amendment
+        if proposal.buyer_signed && proposal.seller_signed {
+            let old_amount = escrow.amount;
+            let old_deadline = escrow.deadline;
+            let old_metadata_hash = escrow.metadata_hash.clone();
+
+            if let Some(new_amount) = proposal.new_amount {
+                let diff = new_amount - escrow.amount;
+                if diff > 0 {
+                    // Buyer must top up the difference
+                    let token_client = token::Client::new(&env, &escrow.token);
+                    token_client.transfer(&escrow.buyer, &env.current_contract_address(), &diff);
+                } else if diff < 0 {
+                    // Refund the difference to buyer
+                    let token_client = token::Client::new(&env, &escrow.token);
+                    token_client.transfer(&env.current_contract_address(), &escrow.buyer, &(-diff));
+                }
+                escrow.amount = new_amount;
+            }
+            if let Some(new_deadline) = proposal.new_deadline {
+                escrow.deadline = new_deadline;
+            }
+            if let Some(ref new_hash) = proposal.new_metadata_hash {
+                escrow.metadata_hash = Some(new_hash.clone());
+            }
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::Escrow(escrow_id), &escrow);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Escrow(escrow_id),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+
+            // Remove the applied proposal
+            env.storage()
+                .persistent()
+                .remove(&DataKey::AmendmentProposal(escrow_id));
+
+            events::emit_amendment_applied(
+                &env,
+                escrow_id,
+                proposal.nonce,
+                old_amount,
+                escrow.amount,
+                old_deadline,
+                escrow.deadline,
+                old_metadata_hash,
+                escrow.metadata_hash.clone(),
+            );
+        } else {
+            // Save updated signature state
+            env.storage()
+                .persistent()
+                .set(&DataKey::AmendmentProposal(escrow_id), &proposal);
+            env.storage().persistent().extend_ttl(
+                &DataKey::AmendmentProposal(escrow_id),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+
+            events::emit_amendment_signed(&env, escrow_id, proposal.nonce, signer);
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Cancel a pending amendment proposal.
+    /// Callable by either the buyer or seller.
+    pub fn cancel_amendment(env: Env, caller: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        caller.require_auth();
+
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if caller != escrow.buyer && caller != escrow.seller {
+            panic!("Only buyer or seller can cancel an amendment");
+        }
+
+        let proposal: AmendmentProposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AmendmentProposal(escrow_id))
+            .expect("No pending amendment proposal");
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AmendmentProposal(escrow_id));
+
+        events::emit_amendment_cancelled(&env, escrow_id, proposal.nonce, caller);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Query the current pending amendment proposal for an escrow.
+    pub fn get_amendment_proposal(env: Env, escrow_id: u32) -> Option<AmendmentProposal> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AmendmentProposal(escrow_id))
     }
 }
 

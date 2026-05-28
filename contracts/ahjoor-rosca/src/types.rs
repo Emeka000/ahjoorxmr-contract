@@ -45,6 +45,13 @@ pub struct RoscaConfig {
     pub skip_fee: i128,
     pub max_skips_per_cycle: u32,
     pub voting_mode: VotingMode,
+    /// Late fee in basis points applied to contributions during the grace period.
+    /// Collected from the late contributor and distributed to on-time members.
+    /// 0 = no late fee (grace period is free). Max 1000 bps (10%).
+    pub late_fee_bps: u32,
+    /// Grace period duration in seconds (timestamp-based schedule).
+    /// Used when use_timestamp_schedule = true. 0 = no grace period.
+    pub grace_period_seconds: u64,
 }
 
 #[contracttype]

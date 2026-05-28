@@ -979,3 +979,106 @@ pub fn emit_multi_seller_escrow_created(
     }
     .publish(e);
 }
+
+// --- Mutual Amendment Protocol Events ---
+
+/// Event: Amendment proposed by buyer or seller
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AmendmentProposed {
+    pub escrow_id: u32,
+    pub nonce: u32,
+    pub proposer: Address,
+    pub expires_at: u64,
+}
+
+/// Event: Amendment signed by a party
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AmendmentSigned {
+    pub escrow_id: u32,
+    pub nonce: u32,
+    pub signer: Address,
+}
+
+/// Event: Amendment applied after both parties signed
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AmendmentApplied {
+    pub escrow_id: u32,
+    pub nonce: u32,
+    pub old_amount: i128,
+    pub new_amount: i128,
+    pub old_deadline: u64,
+    pub new_deadline: u64,
+}
+
+/// Event: Amendment proposal cancelled
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AmendmentCancelled {
+    pub escrow_id: u32,
+    pub nonce: u32,
+    pub cancelled_by: Address,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn emit_amendment_proposed(
+    e: &Env,
+    escrow_id: u32,
+    nonce: u32,
+    proposer: Address,
+    _new_amount: Option<i128>,
+    _new_deadline: Option<u64>,
+    _new_metadata_hash: Option<BytesN<32>>,
+    expires_at: u64,
+) {
+    AmendmentProposed {
+        escrow_id,
+        nonce,
+        proposer,
+        expires_at,
+    }
+    .publish(e);
+}
+
+pub fn emit_amendment_signed(e: &Env, escrow_id: u32, nonce: u32, signer: Address) {
+    AmendmentSigned {
+        escrow_id,
+        nonce,
+        signer,
+    }
+    .publish(e);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn emit_amendment_applied(
+    e: &Env,
+    escrow_id: u32,
+    nonce: u32,
+    old_amount: i128,
+    new_amount: i128,
+    old_deadline: u64,
+    new_deadline: u64,
+    _old_metadata_hash: Option<BytesN<32>>,
+    _new_metadata_hash: Option<BytesN<32>>,
+) {
+    AmendmentApplied {
+        escrow_id,
+        nonce,
+        old_amount,
+        new_amount,
+        old_deadline,
+        new_deadline,
+    }
+    .publish(e);
+}
+
+pub fn emit_amendment_cancelled(e: &Env, escrow_id: u32, nonce: u32, cancelled_by: Address) {
+    AmendmentCancelled {
+        escrow_id,
+        nonce,
+        cancelled_by,
+    }
+    .publish(e);
+}
