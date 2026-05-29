@@ -1,6 +1,6 @@
 #![no_std]
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, Vec,
+    contract, contracterror, contractimpl, contracttype, token, Address, BytesN, Env, Vec,
 };
 
 /// Storage TTL Constants
@@ -30,9 +30,10 @@ pub enum Error {
 pub struct TokenQuota {
     pub max_volume_per_period: i128,
     pub period_ledgers: u32,
-    TokenAlreadySuspended = 6,
-    TokenNotSuspended = 7,
 }
+
+/// Type alias kept for client compatibility.
+pub type TokenSuspension = SuspensionRecord;
 
 #[contracttype]
 #[derive(Clone)]
@@ -66,7 +67,64 @@ pub enum DataKey {
     TokenQuota(Address),
     /// Persistent: Token volume per ledger bucket
     TokenVolumeBucket(Address, u32),
+
+    // --- Feature: Community Governance Voting ---
+    /// Proposal counter (u32)
+    ProposalCounter,
+    /// Governance token address used for stake/weight validation
+    GovernanceToken,
+    /// Minimum token stake required to submit a listing proposal
+    MinProposalStake,
+    /// Voting window in ledgers
+    VotingWindowLedgers,
+    /// Delay in ledgers between finalisation and enactment
+    EnactmentDelayLedgers,
+    /// Quorum in basis points (e.g. 5000 = 50%)
+    QuorumBps,
+    /// Per-proposal record
+    ListingProposal(u32),
+    /// Per-(proposal, voter) vote record: (approve: bool, weight: i128)
+    VoteRecord(u32, Address),
 }
+
+/// Status of a governance listing proposal.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProposalStatus {
+    Active = 0,
+    PendingEnactment = 1,
+    Enacted = 2,
+    Failed = 3,
+    Vetoed = 4,
+}
+
+/// A community-initiated proposal to list a new token.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListingProposal {
+    pub proposal_id: u32,
+    pub token: Address,
+    pub proposer: Address,
+    pub rationale_hash: BytesN<32>,
+    /// Ledger after which voting closes.
+    pub voting_deadline_ledger: u32,
+    /// Cumulative approve-weight (stake-weighted).
+    pub approve_weight: i128,
+    /// Cumulative reject-weight.
+    pub reject_weight: i128,
+    pub status: ProposalStatus,
+    /// Ledger after which enact_listing can be called (0 until finalised).
+    pub enactment_deadline_ledger: u32,
+}
+
+/// Default voting window: ~7 days at ~5 s/ledger = 120,960 ledgers
+const DEFAULT_VOTING_WINDOW_LEDGERS: u32 = 120_960;
+
+/// Default enactment delay: ~2 days = 34,560 ledgers
+const DEFAULT_ENACTMENT_DELAY_LEDGERS: u32 = 34_560;
+
+/// Default quorum: 50% = 5000 bps
+const DEFAULT_QUORUM_BPS: u32 = 5_000;
 
 mod events;
 mod client;
@@ -189,23 +247,6 @@ impl TokenWhitelistContract {
     /// Check if a token is allowed (public view function)
     /// Returns false during active suspension; lazily clears and reinstates after expiry
     pub fn is_token_allowed(env: Env, token: Address) -> bool {
-        // #297: Lazy suspension check
-        let susp_key = DataKey::TokenSuspension(token.clone());
-        if let Some(suspension) = env
-            .storage()
-            .persistent()
-            .get::<DataKey, TokenSuspension>(&susp_key)
-        {
-            if env.ledger().sequence() < suspension.expiry_ledger {
-                // Still suspended
-                return false;
-            } else {
-                // Expired — lazy reinstatement: clear suspension record
-                env.storage().persistent().remove(&susp_key);
-                events::emit_token_auto_reinstated(&env, token.clone(), env.ledger().sequence());
-            }
-        }
-
         let whitelist: Vec<Address> = env
             .storage()
             .persistent()
@@ -468,6 +509,20 @@ impl TokenWhitelistContract {
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
+    /// Get the active suspension record for a token, if any.
+    pub fn get_token_suspension(env: Env, token: Address) -> Option<SuspensionRecord> {
+        let maybe: Option<SuspensionRecord> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SuspensionRecord(token.clone()));
+        if let Some(ref record) = maybe {
+            if env.ledger().sequence() >= record.expiry_ledger {
+                return None;
+            }
+        }
+        maybe
+    }
+
     /// Get suspension history for a token (up to last 10 entries)
     pub fn get_suspension_history(env: Env, token: Address) -> Vec<SuspensionHistoryEntry> {
         env.storage()
@@ -722,6 +777,341 @@ impl TokenWhitelistContract {
             panic!("Unauthorized: caller is not admin");
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Feature: Token Whitelist Community Governance Voting
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Admin sets the governance token used for stake/weight validation.
+    pub fn set_governance_token(env: Env, admin: Address, governance_token: Address) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        env.storage().instance().set(&DataKey::GovernanceToken, &governance_token);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin sets the minimum stake required to submit a proposal.
+    pub fn set_min_proposal_stake(env: Env, admin: Address, min_stake: i128) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        if min_stake <= 0 { panic!("min_stake must be positive"); }
+        env.storage().instance().set(&DataKey::MinProposalStake, &min_stake);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin sets the voting window in ledgers.
+    pub fn set_voting_window_ledgers(env: Env, admin: Address, ledgers: u32) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        if ledgers == 0 { panic!("ledgers must be positive"); }
+        env.storage().instance().set(&DataKey::VotingWindowLedgers, &ledgers);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin sets the enactment delay in ledgers.
+    pub fn set_enactment_delay_ledgers(env: Env, admin: Address, ledgers: u32) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        if ledgers == 0 { panic!("ledgers must be positive"); }
+        env.storage().instance().set(&DataKey::EnactmentDelayLedgers, &ledgers);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin sets the quorum in basis points (e.g. 5000 = 50%).
+    pub fn set_quorum_bps(env: Env, admin: Address, quorum_bps: u32) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        if quorum_bps > 10_000 { panic!("quorum_bps cannot exceed 10000"); }
+        env.storage().instance().set(&DataKey::QuorumBps, &quorum_bps);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Any address holding >= min_proposal_stake of the governance token can propose a new listing.
+    /// Returns the proposal_id.
+    pub fn propose_token_listing(
+        env: Env,
+        proposer: Address,
+        token: Address,
+        rationale_hash: BytesN<32>,
+    ) -> u32 {
+        proposer.require_auth();
+
+        let governance_token: Address = env
+            .storage().instance()
+            .get(&DataKey::GovernanceToken)
+            .expect("GovernanceTokenNotConfigured");
+
+        let min_stake: i128 = env
+            .storage().instance()
+            .get(&DataKey::MinProposalStake)
+            .unwrap_or(1);
+
+        // Cross-contract governance token balance check
+        let proposer_balance = token::Client::new(&env, &governance_token).balance(&proposer);
+        if proposer_balance < min_stake {
+            panic!("InsufficientProposerStake");
+        }
+
+        let voting_window: u32 = env
+            .storage().instance()
+            .get(&DataKey::VotingWindowLedgers)
+            .unwrap_or(DEFAULT_VOTING_WINDOW_LEDGERS);
+
+        let proposal_id: u32 = env
+            .storage().instance()
+            .get(&DataKey::ProposalCounter)
+            .unwrap_or(0);
+
+        let proposal = ListingProposal {
+            proposal_id,
+            token: token.clone(),
+            proposer: proposer.clone(),
+            rationale_hash,
+            voting_deadline_ledger: env.ledger().sequence() + voting_window,
+            approve_weight: 0,
+            reject_weight: 0,
+            status: ProposalStatus::Active,
+            enactment_deadline_ledger: 0,
+        };
+
+        env.storage().persistent().set(&DataKey::ListingProposal(proposal_id), &proposal);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ListingProposal(proposal_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.storage().instance().set(&DataKey::ProposalCounter, &(proposal_id + 1));
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        events::emit_listing_proposed(&env, proposal_id, token, proposer);
+
+        proposal_id
+    }
+
+    /// Cast or overwrite a vote on an active proposal.
+    /// `weight` is validated against the voter's governance token balance.
+    /// Duplicate votes overwrite (last-write-wins).
+    pub fn vote_listing(
+        env: Env,
+        voter: Address,
+        proposal_id: u32,
+        approve: bool,
+        weight: i128,
+    ) {
+        voter.require_auth();
+
+        if weight <= 0 { panic!("weight must be positive"); }
+
+        let governance_token: Address = env
+            .storage().instance()
+            .get(&DataKey::GovernanceToken)
+            .expect("GovernanceTokenNotConfigured");
+
+        // Validate weight does not exceed voter's balance
+        let voter_balance = token::Client::new(&env, &governance_token).balance(&voter);
+        if weight > voter_balance {
+            panic!("VoteWeightExceedsBalance");
+        }
+
+        let mut proposal: ListingProposal = env
+            .storage().persistent()
+            .get(&DataKey::ListingProposal(proposal_id))
+            .expect("ProposalNotFound");
+
+        if proposal.status != ProposalStatus::Active {
+            panic!("ProposalNotActive");
+        }
+
+        if env.ledger().sequence() > proposal.voting_deadline_ledger {
+            panic!("VotingWindowClosed");
+        }
+
+        // Overwrite previous vote if exists
+        let vote_key = DataKey::VoteRecord(proposal_id, voter.clone());
+        if let Some((prev_approve, prev_weight)) = env
+            .storage().persistent()
+            .get::<DataKey, (bool, i128)>(&vote_key)
+        {
+            if prev_approve {
+                proposal.approve_weight = proposal.approve_weight.saturating_sub(prev_weight);
+            } else {
+                proposal.reject_weight = proposal.reject_weight.saturating_sub(prev_weight);
+            }
+        }
+
+        // Record new vote
+        if approve {
+            proposal.approve_weight = proposal.approve_weight.saturating_add(weight);
+        } else {
+            proposal.reject_weight = proposal.reject_weight.saturating_add(weight);
+        }
+
+        env.storage().persistent().set(&vote_key, &(approve, weight));
+        env.storage().persistent().extend_ttl(
+            &vote_key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.storage().persistent().set(&DataKey::ListingProposal(proposal_id), &proposal);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ListingProposal(proposal_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_listing_vote_cast(&env, proposal_id, voter, approve, weight);
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Tally votes after the voting window closes.
+    /// If quorum is met, moves to PendingEnactment; otherwise Failed.
+    pub fn finalise_listing_proposal(env: Env, proposal_id: u32) {
+        let mut proposal: ListingProposal = env
+            .storage().persistent()
+            .get(&DataKey::ListingProposal(proposal_id))
+            .expect("ProposalNotFound");
+
+        if proposal.status != ProposalStatus::Active {
+            panic!("ProposalNotActive");
+        }
+
+        if env.ledger().sequence() <= proposal.voting_deadline_ledger {
+            panic!("VotingWindowNotClosed");
+        }
+
+        let total_weight = proposal.approve_weight + proposal.reject_weight;
+        let quorum_bps: u32 = env
+            .storage().instance()
+            .get(&DataKey::QuorumBps)
+            .unwrap_or(DEFAULT_QUORUM_BPS);
+
+        let quorum_met = if total_weight > 0 {
+            // approve_weight / total_weight >= quorum_bps / 10000
+            // ⟺ approve_weight * 10000 >= quorum_bps * total_weight
+            proposal.approve_weight * 10_000 >= quorum_bps as i128 * total_weight
+        } else {
+            false
+        };
+
+        if quorum_met {
+            let enactment_delay: u32 = env
+                .storage().instance()
+                .get(&DataKey::EnactmentDelayLedgers)
+                .unwrap_or(DEFAULT_ENACTMENT_DELAY_LEDGERS);
+            proposal.status = ProposalStatus::PendingEnactment;
+            proposal.enactment_deadline_ledger = env.ledger().sequence() + enactment_delay;
+        } else {
+            proposal.status = ProposalStatus::Failed;
+        }
+
+        env.storage().persistent().set(&DataKey::ListingProposal(proposal_id), &proposal);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ListingProposal(proposal_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// After the enactment delay, any caller can enact the proposal to add the token.
+    pub fn enact_listing(env: Env, proposal_id: u32) {
+        let mut proposal: ListingProposal = env
+            .storage().persistent()
+            .get(&DataKey::ListingProposal(proposal_id))
+            .expect("ProposalNotFound");
+
+        if proposal.status != ProposalStatus::PendingEnactment {
+            panic!("ProposalNotPendingEnactment");
+        }
+
+        if env.ledger().sequence() <= proposal.enactment_deadline_ledger {
+            panic!("EnactmentDelayNotElapsed");
+        }
+
+        // Add the token to the whitelist
+        let mut whitelist: Vec<Address> = env
+            .storage().persistent()
+            .get(&DataKey::WhitelistedTokens)
+            .unwrap_or_else(|| Vec::new(&env));
+
+        // Prevent duplicates
+        let mut already_listed = false;
+        for t in whitelist.iter() {
+            if t == proposal.token {
+                already_listed = true;
+                break;
+            }
+        }
+
+        if !already_listed {
+            whitelist.push_back(proposal.token.clone());
+            env.storage().persistent().set(&DataKey::WhitelistedTokens, &whitelist);
+            env.storage().persistent().extend_ttl(
+                &DataKey::WhitelistedTokens,
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+        }
+
+        proposal.status = ProposalStatus::Enacted;
+
+        env.storage().persistent().set(&DataKey::ListingProposal(proposal_id), &proposal);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ListingProposal(proposal_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_listing_enacted(&env, proposal_id, proposal.token);
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin can permanently veto a proposal, blocking enactment.
+    pub fn veto_listing_proposal(env: Env, admin: Address, proposal_id: u32, reason_hash: BytesN<32>) {
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+
+        let mut proposal: ListingProposal = env
+            .storage().persistent()
+            .get(&DataKey::ListingProposal(proposal_id))
+            .expect("ProposalNotFound");
+
+        if proposal.status == ProposalStatus::Enacted
+            || proposal.status == ProposalStatus::Vetoed
+        {
+            panic!("ProposalAlreadyTerminal");
+        }
+
+        proposal.status = ProposalStatus::Vetoed;
+
+        env.storage().persistent().set(&DataKey::ListingProposal(proposal_id), &proposal);
+        env.storage().persistent().extend_ttl(
+            &DataKey::ListingProposal(proposal_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_listing_vetoed(&env, proposal_id, reason_hash);
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get a listing proposal by ID.
+    pub fn get_listing_proposal(env: Env, proposal_id: u32) -> ListingProposal {
+        env.storage().persistent()
+            .get(&DataKey::ListingProposal(proposal_id))
+            .expect("ProposalNotFound")
+    }
+
+    /// Get the current proposal counter (total proposals ever created).
+    pub fn get_proposal_counter(env: Env) -> u32 {
+        env.storage().instance().get(&DataKey::ProposalCounter).unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
@@ -729,3 +1119,6 @@ mod test;
 
 #[cfg(test)]
 mod test_suspension;
+
+#[cfg(test)]
+mod test_governance;

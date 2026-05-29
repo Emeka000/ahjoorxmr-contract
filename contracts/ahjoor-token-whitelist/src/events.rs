@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, Address, BytesN, Env};
+use soroban_sdk::{contractevent, Address, BytesN, Env, Symbol};
 
 /// Event: Contract initialized
 #[contractevent]
@@ -152,5 +152,57 @@ pub fn emit_token_quota_exceeded(e: &Env, token: Address, attempted_amount: i128
         period_volume,
     }
     .publish(e);
-    TokenAutoReinstated { token, ledger }.publish(e);
 }
+
+// ─── Feature: Community Governance Voting ────────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ListingProposed {
+    pub proposal_id: u32,
+    pub token: Address,
+    pub proposer: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ListingVoteCast {
+    pub proposal_id: u32,
+    pub voter: Address,
+    pub approve: bool,
+    pub weight: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ListingEnacted {
+    pub proposal_id: u32,
+    pub token: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ListingVetoed {
+    pub proposal_id: u32,
+    pub reason_hash: BytesN<32>,
+}
+
+pub fn emit_listing_proposed(e: &Env, proposal_id: u32, token: Address, proposer: Address) {
+    ListingProposed { proposal_id, token, proposer }.publish(e);
+}
+
+pub fn emit_listing_vote_cast(e: &Env, proposal_id: u32, voter: Address, approve: bool, weight: i128) {
+    ListingVoteCast { proposal_id, voter, approve, weight }.publish(e);
+}
+
+pub fn emit_listing_enacted(e: &Env, proposal_id: u32, token: Address) {
+    ListingEnacted { proposal_id, token }.publish(e);
+}
+
+pub fn emit_listing_vetoed(e: &Env, proposal_id: u32, reason_hash: BytesN<32>) {
+    ListingVetoed { proposal_id, reason_hash }.publish(e);
+}
+
+// Keep Symbol import used for future event helpers
+#[allow(dead_code)]
+fn _use_symbol(_: Symbol) {}

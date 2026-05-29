@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, Address, Env, String};
+use soroban_sdk::{contractevent, Address, BytesN, Env, String};
 
 /// Event: Refund reason code recorded (#157)
 #[contractevent]
@@ -600,6 +600,8 @@ pub fn emit_refund_partially_approved(
         remaining_unreturned,
     }
     .publish(e);
+}
+
 // --- Issue #238: Refund Priority ---
 
 /// Event: Priority set or changed on a refund request
@@ -725,4 +727,95 @@ pub fn emit_store_credit_redeemed(
         remaining_credit,
     }
     .publish(e);
+}
+
+// ─── Feature: Escalating Mediation Timeline ──────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct RefundEscalated {
+    pub refund_id: u32,
+    pub escalated_by: Address,
+    pub senior_arbiter: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct EscalatedRefundResolved {
+    pub refund_id: u32,
+    pub senior_arbiter: Address,
+    pub approved: bool,
+    pub resolution_hash: BytesN<32>,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct RefundAutoApprovedSeniorMiss {
+    pub refund_id: u32,
+}
+
+pub fn emit_refund_escalated(e: &Env, refund_id: u32, escalated_by: Address, senior_arbiter: Address) {
+    RefundEscalated { refund_id, escalated_by, senior_arbiter }.publish(e);
+}
+
+pub fn emit_escalated_refund_resolved(
+    e: &Env,
+    refund_id: u32,
+    senior_arbiter: Address,
+    approved: bool,
+    resolution_hash: BytesN<32>,
+) {
+    EscalatedRefundResolved { refund_id, senior_arbiter, approved, resolution_hash }.publish(e);
+}
+
+pub fn emit_refund_auto_approved_senior_miss(e: &Env, refund_id: u32) {
+    RefundAutoApprovedSeniorMiss { refund_id }.publish(e);
+}
+
+// ─── Feature: Customer Abuse Score ───────────────────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct CustomerAbuseScoreUpdated {
+    pub customer: Address,
+    pub new_score: u32,
+    pub delta: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct CustomerBlockedForAbuse {
+    pub customer: Address,
+    pub blocked_until_ledger: u64,
+}
+
+pub fn emit_customer_abuse_score_updated(e: &Env, customer: Address, new_score: u32, delta: u32) {
+    CustomerAbuseScoreUpdated { customer, new_score, delta }.publish(e);
+}
+
+pub fn emit_customer_blocked_for_abuse(e: &Env, customer: Address, blocked_until_ledger: u64) {
+    CustomerBlockedForAbuse { customer, blocked_until_ledger }.publish(e);
+}
+
+// ─── Feature: Cross-Contract Refund Registration ─────────────────────────────
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct CrossContractRefundRegistered {
+    pub refund_id: u32,
+    pub origin_contract: Address,
+    pub origin_id: u32,
+    pub customer: Address,
+    pub amount: i128,
+}
+
+pub fn emit_cross_contract_refund_registered(
+    e: &Env,
+    refund_id: u32,
+    origin_contract: Address,
+    origin_id: u32,
+    customer: Address,
+    amount: i128,
+) {
+    CrossContractRefundRegistered { refund_id, origin_contract, origin_id, customer, amount }.publish(e);
 }

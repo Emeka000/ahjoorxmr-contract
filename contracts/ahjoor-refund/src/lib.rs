@@ -76,6 +76,10 @@ pub enum RefundStatus {
     EvidenceSubmitted = 8,
     /// #276: Evidence window expired without merchant submission.
     EvidencePeriodExpired = 9,
+    /// Escalated to senior arbiter after primary reviewer missed deadline.
+    EscalatedToSenior = 10,
+    /// Cross-contract refund registered from a whitelisted origin contract.
+    CrossContractRefunded = 11,
 }
 
 /// #238: Priority label for refund requests.
@@ -109,9 +113,15 @@ pub struct Refund {
     /// #238: Priority label; defaults to Medium.
     pub priority: Priority,
     /// #276: Ledger sequence by which merchant must submit evidence.
-    pub merchant_response_deadline_ledger: u32,
+    pub merch_response_deadline: u32,
     /// #276: Whether merchant has submitted evidence.
     pub evidence_submitted: bool,
+    /// Ledger by which the primary reviewer must resolve (0 = not configured).
+    pub primary_review_deadline_ledger: u32,
+    /// Ledger by which the senior arbiter must resolve (0 = not escalated).
+    pub senior_review_deadline_ledger: u32,
+    /// Origin contract address for cross-contract refunds (None for customer-initiated).
+    pub origin_contract: Option<Address>,
 }
 
 #[contracttype]
@@ -218,6 +228,32 @@ pub enum DataKey {
     StoreCredit(Address, Address),
     /// Admin-configurable max bonus BPS above refund amount for store-credit vouchers
     MaxVoucherBonusBps,
+
+    // --- Feature: Escalating Mediation Timeline ---
+    /// Admin-configured default primary review window in ledgers
+    PrimaryReviewDeadlineLedgers,
+    /// Admin-configured senior review window in ledgers
+    SeniorReviewDeadlineLedgers,
+    /// Registered senior arbiter address
+    SeniorArbiter,
+    /// Flag: auto-approve refund if senior arbiter also misses their deadline
+    AutoApproveOnSeniorMiss,
+
+    // --- Feature: Customer Abuse Score ---
+    /// Per-customer abuse record
+    CustomerAbuseRecord(Address),
+    /// Admin-configurable abuse score block threshold
+    AbuseBlockThreshold,
+    /// Ledgers a customer is blocked after hitting the abuse threshold
+    BlockDurationLedgers,
+    /// Ledger window for detecting rapid submissions
+    RapidSubmissionWindowLedgers,
+
+    // --- Feature: Cross-Contract Refund Registration ---
+    /// Vec<Address> of whitelisted origin contracts
+    CrossContractWhitelist,
+    /// Vec<u32> tracking cross-contract refund IDs for admin queue
+    CrossContractRefundQueue,
 }
 
 mod events;
@@ -237,6 +273,35 @@ const DEFAULT_MAX_BATCH_SIZE: u32 = 20;
 
 /// Default merchant response window: ~7 days at ~5s/ledger = 120_960 ledgers
 const DEFAULT_MERCHANT_RESPONSE_WINDOW_LEDGERS: u32 = 120_960;
+
+/// Default abuse block duration: ~30 days at ~5s/ledger = 518_400 ledgers
+const DEFAULT_BLOCK_DURATION_LEDGERS: u64 = 518_400;
+
+/// Default rapid submission window: ~1 hour = 720 ledgers
+const DEFAULT_RAPID_SUBMISSION_WINDOW_LEDGERS: u32 = 720;
+
+/// Default primary review deadline: ~3 days = 51_840 ledgers
+const DEFAULT_PRIMARY_REVIEW_DEADLINE_LEDGERS: u32 = 51_840;
+
+/// Default senior review deadline: ~2 days = 34_560 ledgers
+const DEFAULT_SENIOR_REVIEW_DEADLINE_LEDGERS: u32 = 34_560;
+
+/// Per-customer abuse score record stored in persistent storage.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefundAbuseRecord {
+    pub total_requests: u32,
+    pub denied_count: u32,
+    pub auto_denied_count: u32,
+    pub rapid_submission_count: u32,
+    pub abuse_score: u32,
+    /// Ledger until which the customer is blocked (0 = not blocked).
+    pub blocked_until_ledger: u64,
+    /// Ledger of the last score increment (for decay calculation).
+    pub last_increment_ledger: u64,
+    /// Ledger of the last refund submission (for rapid-submission detection).
+    pub last_submission_ledger: u32,
+}
 
 /// #276: Evidence submitted by merchant for a refund dispute.
 #[contracttype]
@@ -473,6 +538,9 @@ impl AhjoorRefundContract {
             panic!("BuyerBlockedForFraud: score={}, threshold={}", score, threshold);
         }
 
+        // Abuse score check: block customers with active abuse block or threshold exceeded
+        Self::check_abuse_block(&env, &customer);
+
         // --- Cross-contract validation (#64) ---
         let payment_contract_addr: Address = env
             .storage()
@@ -598,7 +666,26 @@ impl AhjoorRefundContract {
             .storage().instance()
             .get(&DataKey::MerchantResponseWindow)
             .unwrap_or(DEFAULT_MERCHANT_RESPONSE_WINDOW_LEDGERS);
-        let merchant_response_deadline_ledger = env.ledger().sequence() + merchant_response_window;
+        let merch_response_deadline = env.ledger().sequence() + merchant_response_window;
+
+        let primary_review_window: u32 = env
+            .storage().instance()
+            .get(&DataKey::PrimaryReviewDeadlineLedgers)
+            .unwrap_or(DEFAULT_PRIMARY_REVIEW_DEADLINE_LEDGERS);
+        let primary_review_deadline_ledger = if is_auto_approved {
+            0
+        } else {
+            env.ledger().sequence() + primary_review_window
+        };
+
+        // Abuse score: record submission ledger and detect rapid submissions
+        let current_seq = env.ledger().sequence();
+        let rapid_window: u32 = env
+            .storage().instance()
+            .get(&DataKey::RapidSubmissionWindowLedgers)
+            .unwrap_or(DEFAULT_RAPID_SUBMISSION_WINDOW_LEDGERS);
+        Self::update_abuse_on_request(&env, &customer, current_seq, rapid_window);
+
         let refund = Refund {
             id: refund_id,
             payment_id,
@@ -617,8 +704,11 @@ impl AhjoorRefundContract {
             escrow_id: None,
             fee_amount: None,
             priority: Priority::Medium,
-            merchant_response_deadline_ledger: if is_auto_approved { 0 } else { merchant_response_deadline_ledger },
+            merch_response_deadline: if is_auto_approved { 0 } else { merch_response_deadline },
             evidence_submitted: false,
+            primary_review_deadline_ledger,
+            senior_review_deadline_ledger: 0,
+            origin_contract: None,
         };
         env.storage().persistent().set(&DataKey::Refund(refund_id), &refund);
         env.storage().persistent().extend_ttl(
@@ -728,16 +818,16 @@ impl AhjoorRefundContract {
 
         // #276: Block adjudication during open evidence window
         if refund.status == RefundStatus::Requested
-            && refund.merchant_response_deadline_ledger > 0
-            && env.ledger().sequence() < refund.merchant_response_deadline_ledger
+            && refund.merch_response_deadline > 0
+            && env.ledger().sequence() < refund.merch_response_deadline
         {
             panic!("EvidenceWindowOpen: merchant evidence window has not elapsed");
         }
 
         // #276: Auto-advance to EvidencePeriodExpired if deadline passed without evidence
         if refund.status == RefundStatus::Requested
-            && refund.merchant_response_deadline_ledger > 0
-            && env.ledger().sequence() >= refund.merchant_response_deadline_ledger
+            && refund.merch_response_deadline > 0
+            && env.ledger().sequence() >= refund.merch_response_deadline
         {
             refund.status = RefundStatus::EvidencePeriodExpired;
             events::emit_evidence_period_expired(&env, refund_id, refund.merchant.clone());
@@ -841,6 +931,9 @@ impl AhjoorRefundContract {
             Self::increment_fraud_score(&env, &refund.customer, Symbol::new(&env, "rejected"));
         }
 
+        // Update abuse score on denial (+10)
+        Self::increment_abuse_score(&env, &refund.customer, 10, false);
+
         Self::update_stats_on_reject(&env, &refund.merchant);
 
         events::emit_refund_rejected(&env, refund_id, admin, rejection_reason, now);
@@ -942,8 +1035,11 @@ impl AhjoorRefundContract {
             escrow_id: None,
             fee_amount: None,
             priority: Priority::Medium,
-            merchant_response_deadline_ledger: 0,
+            merch_response_deadline: 0,
             evidence_submitted: false,
+            primary_review_deadline_ledger: 0,
+            senior_review_deadline_ledger: 0,
+            origin_contract: None,
         };
 
         env.storage()
@@ -2389,8 +2485,11 @@ impl AhjoorRefundContract {
             escrow_id: Some(escrow_id),
             fee_amount: None,
             priority: Priority::Medium,
-            merchant_response_deadline_ledger: 0,
+            merch_response_deadline: 0,
             evidence_submitted: false,
+            primary_review_deadline_ledger: 0,
+            senior_review_deadline_ledger: 0,
+            origin_contract: None,
         };
 
         env.storage()
@@ -3420,6 +3519,8 @@ impl AhjoorRefundContract {
         }
         let has_more = end < total;
         (result, total, has_more)
+    }
+
     /// Approve multiple pending refund requests in a single transaction.
     /// Skips IDs that are not in Requested status rather than reverting.
     /// Returns a BatchRefundResult with processed and skipped IDs.
@@ -3710,8 +3811,8 @@ impl AhjoorRefundContract {
         if refund.evidence_submitted {
             panic!("EvidenceAlreadySubmitted");
         }
-        if refund.merchant_response_deadline_ledger > 0
-            && env.ledger().sequence() > refund.merchant_response_deadline_ledger
+        if refund.merch_response_deadline > 0
+            && env.ledger().sequence() > refund.merch_response_deadline
         {
             // Deadline passed — auto-advance status
             refund.status = RefundStatus::EvidencePeriodExpired;
@@ -3746,6 +3847,684 @@ impl AhjoorRefundContract {
     pub fn get_refund_evidence(env: Env, refund_id: u32) -> Option<RefundEvidence> {
         env.storage().persistent().get(&DataKey::RefundEvidence(refund_id))
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Feature: Refund Escalating Mediation Timeline
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Admin configures the primary review deadline window in ledgers.
+    pub fn set_primary_review_window(env: Env, admin: Address, ledgers: u32) {
+        Self::require_not_paused(&env);
+        Self::require_admin(&env, &admin);
+        if ledgers == 0 { panic!("ledgers must be positive"); }
+        env.storage().instance().set(&DataKey::PrimaryReviewDeadlineLedgers, &ledgers);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin configures the senior review deadline window in ledgers.
+    pub fn set_senior_review_window(env: Env, admin: Address, ledgers: u32) {
+        Self::require_not_paused(&env);
+        Self::require_admin(&env, &admin);
+        if ledgers == 0 { panic!("ledgers must be positive"); }
+        env.storage().instance().set(&DataKey::SeniorReviewDeadlineLedgers, &ledgers);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin registers the senior arbiter address.
+    pub fn set_senior_arbiter(env: Env, admin: Address, arbiter: Address) {
+        Self::require_not_paused(&env);
+        Self::require_admin(&env, &admin);
+        env.storage().instance().set(&DataKey::SeniorArbiter, &arbiter);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin enables or disables auto-approval when the senior arbiter misses their deadline.
+    pub fn set_auto_approve_on_senior_miss(env: Env, admin: Address, flag: bool) {
+        Self::require_not_paused(&env);
+        Self::require_admin(&env, &admin);
+        env.storage().instance().set(&DataKey::AutoApproveOnSeniorMiss, &flag);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get the configured senior arbiter address.
+    pub fn get_senior_arbiter(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::SeniorArbiter)
+    }
+
+    /// Escalate a refund to the senior arbiter after the primary review deadline has passed.
+    /// Callable by any party. Panics if primary deadline has not yet passed.
+    pub fn escalate_to_senior(env: Env, caller: Address, refund_id: u32) {
+        Self::require_not_paused(&env);
+        caller.require_auth();
+
+        let mut refund: Refund = env
+            .storage().persistent()
+            .get(&DataKey::Refund(refund_id))
+            .expect("Refund not found");
+
+        if refund.status != RefundStatus::Requested
+            && refund.status != RefundStatus::EvidenceSubmitted
+            && refund.status != RefundStatus::EvidencePeriodExpired
+        {
+            panic!("EscalationNotAllowed: refund is not in an escalatable state");
+        }
+
+        if refund.primary_review_deadline_ledger == 0 {
+            panic!("EscalationNotAllowed: no primary review deadline configured for this refund");
+        }
+
+        if env.ledger().sequence() < refund.primary_review_deadline_ledger {
+            panic!("PrimaryDeadlineNotPassed: primary review deadline has not elapsed");
+        }
+
+        let senior_arbiter: Address = env
+            .storage().instance()
+            .get(&DataKey::SeniorArbiter)
+            .expect("SeniorArbiterNotConfigured");
+
+        let senior_window: u32 = env
+            .storage().instance()
+            .get(&DataKey::SeniorReviewDeadlineLedgers)
+            .unwrap_or(DEFAULT_SENIOR_REVIEW_DEADLINE_LEDGERS);
+
+        refund.status = RefundStatus::EscalatedToSenior;
+        refund.senior_review_deadline_ledger = env.ledger().sequence() + senior_window;
+
+        env.storage().persistent().set(&DataKey::Refund(refund_id), &refund);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Refund(refund_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_refund_escalated(&env, refund_id, caller, senior_arbiter);
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Senior arbiter resolves an escalated refund dispute.
+    /// If approved: processes refund (transfers tokens to customer).
+    /// If not approved: returns escrowed tokens to customer and marks rejected.
+    pub fn resolve_escalated_refund(
+        env: Env,
+        senior_arbiter: Address,
+        refund_id: u32,
+        approved: bool,
+        resolution_hash: BytesN<32>,
+    ) {
+        Self::require_not_paused(&env);
+        senior_arbiter.require_auth();
+
+        let stored_arbiter: Address = env
+            .storage().instance()
+            .get(&DataKey::SeniorArbiter)
+            .expect("SeniorArbiterNotConfigured");
+
+        if senior_arbiter != stored_arbiter {
+            panic!("UnauthorizedSeniorArbiter");
+        }
+
+        let mut refund: Refund = env
+            .storage().persistent()
+            .get(&DataKey::Refund(refund_id))
+            .expect("Refund not found");
+
+        if refund.status != RefundStatus::EscalatedToSenior {
+            panic!("RefundNotEscalated");
+        }
+
+        let now = env.ledger().timestamp();
+        let client = token::Client::new(&env, &refund.token);
+
+        if approved {
+            let fee_bps: u32 = env.storage().instance().get(&DataKey::RefundFeeBps).unwrap_or(0);
+            let fee_amount = if fee_bps > 0 {
+                (refund.amount as u128 * fee_bps as u128 / 10_000) as i128
+            } else {
+                0
+            };
+            let customer_amount = refund.amount - fee_amount;
+            if customer_amount > 0 {
+                client.transfer(&env.current_contract_address(), &refund.customer, &customer_amount);
+            }
+            if fee_amount > 0 {
+                if let Some(fee_recipient) = env.storage().instance().get::<DataKey, Address>(&DataKey::FeeRecipient) {
+                    client.transfer(&env.current_contract_address(), &fee_recipient, &fee_amount);
+                    events::emit_refund_fee_collected(&env, refund_id, fee_amount);
+                }
+            }
+            let already_refunded: i128 = env
+                .storage().persistent()
+                .get(&DataKey::RefundedAmount(refund.payment_id))
+                .unwrap_or(0);
+            env.storage().persistent().set(
+                &DataKey::RefundedAmount(refund.payment_id),
+                &(already_refunded + refund.amount),
+            );
+            env.storage().persistent().extend_ttl(
+                &DataKey::RefundedAmount(refund.payment_id),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+            refund.status = RefundStatus::Processed;
+            refund.approved_at = Some(now);
+            refund.processed_at = Some(now);
+            refund.fee_amount = if fee_amount > 0 { Some(fee_amount) } else { None };
+            Self::update_stats_on_approve(&env, &refund.merchant);
+            Self::update_stats_on_process(&env, &refund.merchant, refund.amount);
+        } else {
+            client.transfer(&env.current_contract_address(), &refund.customer, &refund.amount);
+            refund.status = RefundStatus::Rejected;
+            refund.rejected_at = Some(now);
+            Self::update_stats_on_reject(&env, &refund.merchant);
+        }
+
+        env.storage().persistent().set(&DataKey::Refund(refund_id), &refund);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Refund(refund_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        Self::remove_from_pending_queue(&env, refund_id);
+
+        events::emit_escalated_refund_resolved(&env, refund_id, senior_arbiter, approved, resolution_hash);
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Trigger auto-approval when the senior arbiter has missed their deadline.
+    /// Callable by anyone after the senior deadline passes.
+    /// Only executes if `auto_approve_on_senior_miss` is true.
+    pub fn trigger_senior_auto_approve(env: Env, refund_id: u32) {
+        Self::require_not_paused(&env);
+
+        let auto_approve: bool = env
+            .storage().instance()
+            .get(&DataKey::AutoApproveOnSeniorMiss)
+            .unwrap_or(false);
+
+        if !auto_approve {
+            panic!("AutoApproveOnSeniorMissDisabled");
+        }
+
+        let mut refund: Refund = env
+            .storage().persistent()
+            .get(&DataKey::Refund(refund_id))
+            .expect("Refund not found");
+
+        if refund.status != RefundStatus::EscalatedToSenior {
+            panic!("RefundNotEscalated");
+        }
+
+        if refund.senior_review_deadline_ledger == 0
+            || env.ledger().sequence() < refund.senior_review_deadline_ledger
+        {
+            panic!("SeniorDeadlineNotPassed");
+        }
+
+        let now = env.ledger().timestamp();
+        let fee_bps: u32 = env.storage().instance().get(&DataKey::RefundFeeBps).unwrap_or(0);
+        let fee_amount = if fee_bps > 0 {
+            (refund.amount as u128 * fee_bps as u128 / 10_000) as i128
+        } else {
+            0
+        };
+        let customer_amount = refund.amount - fee_amount;
+        let client = token::Client::new(&env, &refund.token);
+        if customer_amount > 0 {
+            client.transfer(&env.current_contract_address(), &refund.customer, &customer_amount);
+        }
+        if fee_amount > 0 {
+            if let Some(fee_recipient) = env.storage().instance().get::<DataKey, Address>(&DataKey::FeeRecipient) {
+                client.transfer(&env.current_contract_address(), &fee_recipient, &fee_amount);
+                events::emit_refund_fee_collected(&env, refund_id, fee_amount);
+            }
+        }
+        let already_refunded: i128 = env
+            .storage().persistent()
+            .get(&DataKey::RefundedAmount(refund.payment_id))
+            .unwrap_or(0);
+        env.storage().persistent().set(
+            &DataKey::RefundedAmount(refund.payment_id),
+            &(already_refunded + refund.amount),
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::RefundedAmount(refund.payment_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        refund.status = RefundStatus::Processed;
+        refund.processed_at = Some(now);
+        refund.auto_approved_source = Some(String::from_str(&env, "senior_miss"));
+        refund.fee_amount = if fee_amount > 0 { Some(fee_amount) } else { None };
+
+        env.storage().persistent().set(&DataKey::Refund(refund_id), &refund);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Refund(refund_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        Self::remove_from_pending_queue(&env, refund_id);
+        Self::update_stats_on_process(&env, &refund.merchant, refund.amount);
+
+        events::emit_refund_auto_approved_senior_miss(&env, refund_id);
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Feature: Refund Customer Abuse Score
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Admin sets the abuse score block threshold.
+    pub fn set_abuse_block_threshold(env: Env, admin: Address, threshold: u32) {
+        Self::require_admin(&env, &admin);
+        if threshold == 0 { panic!("threshold must be positive"); }
+        env.storage().instance().set(&DataKey::AbuseBlockThreshold, &threshold);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin sets how long (in ledgers) a customer stays blocked after hitting the threshold.
+    pub fn set_block_duration_ledgers(env: Env, admin: Address, ledgers: u64) {
+        Self::require_admin(&env, &admin);
+        if ledgers == 0 { panic!("ledgers must be positive"); }
+        env.storage().instance().set(&DataKey::BlockDurationLedgers, &ledgers);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin sets the rapid-submission detection window in ledgers.
+    pub fn set_rapid_submission_window_ledgers(env: Env, admin: Address, ledgers: u32) {
+        Self::require_admin(&env, &admin);
+        if ledgers == 0 { panic!("ledgers must be positive"); }
+        env.storage().instance().set(&DataKey::RapidSubmissionWindowLedgers, &ledgers);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin flags a specific refund denial as abusive, applying the elevated +20 increment.
+    pub fn flag_refund_abuse(env: Env, admin: Address, refund_id: u32) {
+        Self::require_admin(&env, &admin);
+
+        let refund: Refund = env
+            .storage().persistent()
+            .get(&DataKey::Refund(refund_id))
+            .expect("Refund not found");
+
+        if refund.status != RefundStatus::Rejected {
+            panic!("OnlyRejectedRefundsCanBeFlagged");
+        }
+
+        Self::increment_abuse_score(&env, &refund.customer, 10, true); // +10 more on top of existing +10
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin clears a customer's abuse record.
+    pub fn reset_customer_abuse_score(env: Env, admin: Address, customer: Address) {
+        Self::require_admin(&env, &admin);
+
+        let zero_record = RefundAbuseRecord {
+            total_requests: 0,
+            denied_count: 0,
+            auto_denied_count: 0,
+            rapid_submission_count: 0,
+            abuse_score: 0,
+            blocked_until_ledger: 0,
+            last_increment_ledger: 0,
+            last_submission_ledger: 0,
+        };
+        env.storage().persistent().set(&DataKey::CustomerAbuseRecord(customer.clone()), &zero_record);
+        env.storage().persistent().extend_ttl(
+            &DataKey::CustomerAbuseRecord(customer.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Public read: returns the customer's abuse record with lazy decay applied.
+    pub fn get_customer_abuse_score(env: Env, customer: Address) -> RefundAbuseRecord {
+        Self::load_abuse_record_with_decay(&env, &customer)
+    }
+
+    // --- Internal abuse-score helpers ---
+
+    fn load_abuse_record_with_decay(env: &Env, customer: &Address) -> RefundAbuseRecord {
+        let mut record: RefundAbuseRecord = env
+            .storage().persistent()
+            .get(&DataKey::CustomerAbuseRecord(customer.clone()))
+            .unwrap_or(RefundAbuseRecord {
+                total_requests: 0,
+                denied_count: 0,
+                auto_denied_count: 0,
+                rapid_submission_count: 0,
+                abuse_score: 0,
+                blocked_until_ledger: 0,
+                last_increment_ledger: 0,
+                last_submission_ledger: 0,
+            });
+
+        // Lazy decay: -1 per 10,000 ledgers since last increment
+        if record.abuse_score > 0 && record.last_increment_ledger > 0 {
+            let current_ledger = env.ledger().sequence() as u64;
+            if current_ledger > record.last_increment_ledger {
+                let elapsed = current_ledger - record.last_increment_ledger;
+                let decay = (elapsed / 10_000) as u32;
+                if decay > 0 {
+                    record.abuse_score = record.abuse_score.saturating_sub(decay);
+                }
+            }
+        }
+
+        record
+    }
+
+    fn check_abuse_block(env: &Env, customer: &Address) {
+        let record = Self::load_abuse_record_with_decay(env, customer);
+        let current_ledger = env.ledger().sequence() as u64;
+
+        // Check if currently in a block window
+        if record.blocked_until_ledger > 0 && current_ledger <= record.blocked_until_ledger {
+            events::emit_customer_blocked_for_abuse(env, customer.clone(), record.blocked_until_ledger);
+            panic!("CustomerBlockedForAbuse");
+        }
+
+        // Check if score now exceeds threshold (even after decay)
+        let threshold: u32 = env
+            .storage().instance()
+            .get(&DataKey::AbuseBlockThreshold)
+            .unwrap_or(u32::MAX);
+
+        if threshold != u32::MAX && record.abuse_score >= threshold {
+            let block_duration: u64 = env
+                .storage().instance()
+                .get(&DataKey::BlockDurationLedgers)
+                .unwrap_or(DEFAULT_BLOCK_DURATION_LEDGERS);
+            let blocked_until = current_ledger + block_duration;
+
+            let mut updated = record.clone();
+            updated.blocked_until_ledger = blocked_until;
+            env.storage().persistent().set(&DataKey::CustomerAbuseRecord(customer.clone()), &updated);
+            env.storage().persistent().extend_ttl(
+                &DataKey::CustomerAbuseRecord(customer.clone()),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+
+            events::emit_customer_blocked_for_abuse(env, customer.clone(), blocked_until);
+            panic!("CustomerBlockedForAbuse");
+        }
+    }
+
+    fn update_abuse_on_request(env: &Env, customer: &Address, current_seq: u32, rapid_window: u32) {
+        let mut record = Self::load_abuse_record_with_decay(env, customer);
+        record.total_requests += 1;
+
+        // Rapid submission detection
+        if record.last_submission_ledger > 0
+            && current_seq.saturating_sub(record.last_submission_ledger) < rapid_window
+        {
+            record.rapid_submission_count += 1;
+            record.abuse_score = record.abuse_score.saturating_add(5);
+            record.last_increment_ledger = env.ledger().sequence() as u64;
+
+            events::emit_customer_abuse_score_updated(
+                env,
+                customer.clone(),
+                record.abuse_score,
+                5,
+            );
+        }
+
+        record.last_submission_ledger = current_seq;
+
+        env.storage().persistent().set(&DataKey::CustomerAbuseRecord(customer.clone()), &record);
+        env.storage().persistent().extend_ttl(
+            &DataKey::CustomerAbuseRecord(customer.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+    }
+
+    fn increment_abuse_score(env: &Env, customer: &Address, delta: u32, is_elevated: bool) {
+        let mut record = Self::load_abuse_record_with_decay(env, customer);
+
+        let effective_delta = if is_elevated { delta + 10 } else { delta };
+        record.denied_count += 1;
+        if is_elevated {
+            record.auto_denied_count += 1;
+        }
+        record.abuse_score = record.abuse_score.saturating_add(effective_delta);
+        record.last_increment_ledger = env.ledger().sequence() as u64;
+
+        events::emit_customer_abuse_score_updated(
+            env,
+            customer.clone(),
+            record.abuse_score,
+            effective_delta,
+        );
+
+        // Check threshold and apply block
+        let threshold: u32 = env
+            .storage().instance()
+            .get(&DataKey::AbuseBlockThreshold)
+            .unwrap_or(u32::MAX);
+
+        if threshold != u32::MAX && record.abuse_score >= threshold {
+            let block_duration: u64 = env
+                .storage().instance()
+                .get(&DataKey::BlockDurationLedgers)
+                .unwrap_or(DEFAULT_BLOCK_DURATION_LEDGERS);
+            let current_ledger = env.ledger().sequence() as u64;
+            let blocked_until = current_ledger + block_duration;
+            record.blocked_until_ledger = blocked_until;
+            events::emit_customer_blocked_for_abuse(env, customer.clone(), blocked_until);
+        }
+
+        env.storage().persistent().set(&DataKey::CustomerAbuseRecord(customer.clone()), &record);
+        env.storage().persistent().extend_ttl(
+            &DataKey::CustomerAbuseRecord(customer.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Feature: Cross-Contract Refund Registration
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Admin adds a contract to the cross-contract refund whitelist.
+    pub fn add_refund_origin_contract(env: Env, admin: Address, contract: Address) {
+        Self::require_admin(&env, &admin);
+
+        let mut whitelist: Vec<Address> = env
+            .storage().persistent()
+            .get(&DataKey::CrossContractWhitelist)
+            .unwrap_or(Vec::new(&env));
+
+        for addr in whitelist.iter() {
+            if addr == contract {
+                panic!("ContractAlreadyWhitelisted");
+            }
+        }
+
+        whitelist.push_back(contract.clone());
+        env.storage().persistent().set(&DataKey::CrossContractWhitelist, &whitelist);
+        env.storage().persistent().extend_ttl(
+            &DataKey::CrossContractWhitelist,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin removes a contract from the cross-contract refund whitelist.
+    pub fn remove_refund_origin_contract(env: Env, admin: Address, contract: Address) {
+        Self::require_admin(&env, &admin);
+
+        let whitelist: Vec<Address> = env
+            .storage().persistent()
+            .get(&DataKey::CrossContractWhitelist)
+            .unwrap_or(Vec::new(&env));
+
+        let mut new_list = Vec::new(&env);
+        let mut found = false;
+        for addr in whitelist.iter() {
+            if addr == contract {
+                found = true;
+            } else {
+                new_list.push_back(addr);
+            }
+        }
+
+        if !found { panic!("ContractNotWhitelisted"); }
+
+        env.storage().persistent().set(&DataKey::CrossContractWhitelist, &new_list);
+        env.storage().persistent().extend_ttl(
+            &DataKey::CrossContractWhitelist,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Privileged: called by a whitelisted origin contract to register a cross-contract refund.
+    /// No token transfer occurs — the origin contract handles fund movement.
+    /// Returns the new refund ID.
+    pub fn register_cross_contract_refund(
+        env: Env,
+        origin_contract: Address,
+        origin_id: u32,
+        customer: Address,
+        merchant: Address,
+        token: Address,
+        amount: i128,
+        reason_code: u32,
+    ) -> u32 {
+        Self::require_not_paused(&env);
+        origin_contract.require_auth();
+
+        if amount <= 0 { panic!("amount must be positive"); }
+
+        // Verify origin_contract is whitelisted
+        let whitelist: Vec<Address> = env
+            .storage().persistent()
+            .get(&DataKey::CrossContractWhitelist)
+            .unwrap_or(Vec::new(&env));
+        let mut allowed = false;
+        for addr in whitelist.iter() {
+            if addr == origin_contract {
+                allowed = true;
+                break;
+            }
+        }
+        if !allowed { panic!("UnauthorisedOriginContract"); }
+
+        let refund_id = Self::next_refund_id(&env);
+        let now = env.ledger().timestamp();
+
+        let refund = Refund {
+            id: refund_id,
+            payment_id: 0,
+            customer: customer.clone(),
+            merchant: merchant.clone(),
+            amount,
+            token: token.clone(),
+            status: RefundStatus::CrossContractRefunded,
+            reason: String::from_str(&env, "cross_contract"),
+            reason_code,
+            requested_at: now,
+            approved_at: Some(now),
+            processed_at: Some(now),
+            rejected_at: None,
+            auto_approved_source: Some(String::from_str(&env, "cross_contract")),
+            escrow_id: Some(origin_id),
+            fee_amount: None,
+            priority: Priority::Medium,
+            merch_response_deadline: 0,
+            evidence_submitted: false,
+            primary_review_deadline_ledger: 0,
+            senior_review_deadline_ledger: 0,
+            origin_contract: Some(origin_contract.clone()),
+        };
+
+        env.storage().persistent().set(&DataKey::Refund(refund_id), &refund);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Refund(refund_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        Self::append_index(&env, &DataKey::CustomerRefunds(customer.clone()), refund_id);
+        Self::append_index(&env, &DataKey::MerchantRefunds(merchant.clone()), refund_id);
+
+        // Add to cross-contract queue for admin visibility
+        let mut cc_queue: Vec<u32> = env
+            .storage().persistent()
+            .get(&DataKey::CrossContractRefundQueue)
+            .unwrap_or(Vec::new(&env));
+        cc_queue.push_back(refund_id);
+        env.storage().persistent().set(&DataKey::CrossContractRefundQueue, &cc_queue);
+        env.storage().persistent().extend_ttl(
+            &DataKey::CrossContractRefundQueue,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        // Count in per-merchant metrics
+        Self::update_stats_on_request(&env, &merchant, amount);
+        Self::update_stats_on_process(&env, &merchant, amount);
+
+        events::emit_cross_contract_refund_registered(
+            &env,
+            refund_id,
+            origin_contract,
+            origin_id,
+            customer,
+            amount,
+        );
+
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        refund_id
+    }
+
+    /// Get the list of whitelisted origin contracts.
+    pub fn get_cross_contract_whitelist(env: Env) -> Vec<Address> {
+        env.storage().persistent()
+            .get(&DataKey::CrossContractWhitelist)
+            .unwrap_or(Vec::new(&env))
+    }
+
+    /// Get paginated cross-contract refund records for the admin queue.
+    /// Returns (items, total, has_more).
+    pub fn get_cross_contract_refund_queue(
+        env: Env,
+        page: u32,
+        page_size: u32,
+    ) -> (Vec<Refund>, u32, bool) {
+        let effective_size = page_size.min(50);
+        let queue: Vec<u32> = env
+            .storage().persistent()
+            .get(&DataKey::CrossContractRefundQueue)
+            .unwrap_or(Vec::new(&env));
+        let total = queue.len();
+        let start = (page * effective_size).min(total);
+        let end = (start + effective_size).min(total);
+        let mut result: Vec<Refund> = Vec::new(&env);
+        for i in start..end {
+            let rid = queue.get(i).unwrap();
+            if let Some(r) = env.storage().persistent().get::<DataKey, Refund>(&DataKey::Refund(rid)) {
+                result.push_back(r);
+            }
+        }
+        (result, total, end < total)
+    }
 }
 
 #[cfg(test)]
@@ -3765,3 +4544,12 @@ mod test_evidence_window;
 
 #[cfg(test)]
 mod test_store_credit;
+
+#[cfg(test)]
+mod test_escalation;
+
+#[cfg(test)]
+mod test_abuse_score;
+
+#[cfg(test)]
+mod test_cross_contract_refund;
