@@ -317,6 +317,46 @@ pub enum DataKey {
     InspectorReplacement(u32),
 }
 
+/// Overflow storage keys for escrow — DataKey is capped at 52 variants.
+#[derive(Clone)]
+#[contracttype]
+pub enum DataKey2 {
+    /// #332: BPS-based milestone states for proportional progressive release
+    EscrowMilestonesV2(u32),
+}
+
+// ── #332: Milestone BPS Progressive Release ───────────────────────────────────
+
+/// Input type for creating a bps-based milestone escrow.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneInput {
+    pub name: String,
+    pub release_bps: u32,
+    pub description_hash: BytesN<32>,
+}
+
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MilestoneStateStatus {
+    Pending = 0,
+    Submitted = 1,
+    Approved = 2,
+    Rejected = 3,
+}
+
+/// On-chain milestone state for a proportional-release escrow.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MilestoneState {
+    pub name: String,
+    pub release_bps: u32,
+    pub description_hash: BytesN<32>,
+    pub status: MilestoneStateStatus,
+    pub delivery_hash: Option<BytesN<32>>,
+    pub rejection_hash: Option<BytesN<32>>,
+}
+
 const MAX_PROTOCOL_FEE_BPS: u32 = 200; // 2%
 const MAX_ARBITER_FEE_BPS: u32 = 1_000; // 10%
 const DEFAULT_RESOLUTION_COOLING_OFF_SECONDS: u64 = 24 * 60 * 60; // 24 hours
@@ -4503,6 +4543,321 @@ impl AhjoorEscrowContract {
         let avg_x100 = ((total_score * 100) / count as u64) as u32;
         (avg_x100, count)
     }
+
+    // ── #332: Milestone BPS Progressive Release ───────────────────────────────
+
+    /// Create an escrow divided into named milestones with proportional BPS payouts.
+    /// `milestones[i].release_bps` values must sum to exactly 10 000.
+    /// The full `amount` is transferred from buyer into the contract up front.
+    pub fn create_bps_milestone_escrow(
+        env: Env,
+        buyer: Address,
+        seller: Address,
+        arbiter: Address,
+        amount: i128,
+        token: Address,
+        deadline: u64,
+        milestones: Vec<MilestoneInput>,
+    ) -> u32 {
+        buyer.require_auth();
+
+        if milestones.is_empty() {
+            panic!("At least one milestone required");
+        }
+        if milestones.len() > MAX_MILESTONES {
+            panic!("Too many milestones");
+        }
+
+        // Validate release_bps sum == 10 000
+        let mut total_bps: u32 = 0;
+        for i in 0..milestones.len() {
+            let m = milestones.get(i).unwrap();
+            if m.release_bps == 0 {
+                panic!("release_bps must be positive for each milestone");
+            }
+            total_bps = total_bps.saturating_add(m.release_bps);
+        }
+        if total_bps != 10_000 {
+            panic!("Milestone release_bps must sum to 10 000");
+        }
+        if amount <= 0 {
+            panic!("Escrow amount must be positive");
+        }
+
+        let request = EscrowCreateRequest {
+            seller,
+            arbiter,
+            amount,
+            token,
+            deadline,
+            metadata_hash: None,
+            sellers: Vec::new(&env),
+            auto_renew: false,
+            renewal_count: 0,
+            buyer_inactivity_secs: 0,
+            min_lock_until: None,
+            release_base: None,
+            release_quote: None,
+            release_comparison: None,
+            release_threshold_price: None,
+            arbiter_fee_bps: None,
+            dispute_default_winner: None,
+        };
+        let escrow_id = Self::create_escrow_core(&env, &buyer, request);
+
+        // Convert MilestoneInput → MilestoneState (all Pending, no hashes yet)
+        let mut states: Vec<MilestoneState> = Vec::new(&env);
+        for i in 0..milestones.len() {
+            let m = milestones.get(i).unwrap();
+            states.push_back(MilestoneState {
+                name: m.name,
+                release_bps: m.release_bps,
+                description_hash: m.description_hash,
+                status: MilestoneStateStatus::Pending,
+                delivery_hash: None,
+                rejection_hash: None,
+            });
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::EscrowMilestonesV2(escrow_id), &states);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::EscrowMilestonesV2(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        escrow_id
+    }
+
+    /// Seller marks a milestone as delivered by submitting a delivery hash.
+    /// The milestone must be in `Pending` or `Rejected` state.
+    pub fn submit_milestone(
+        env: Env,
+        seller: Address,
+        escrow_id: u32,
+        milestone_index: u32,
+        delivery_hash: BytesN<32>,
+    ) {
+        seller.require_auth();
+
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+        if escrow.seller != seller {
+            panic!("Only the escrow seller may submit milestones");
+        }
+        if escrow.status != EscrowStatus::Active {
+            panic!("Escrow is not active");
+        }
+
+        let mut states: Vec<MilestoneState> = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::EscrowMilestonesV2(escrow_id))
+            .expect("No BPS milestones for this escrow");
+
+        if milestone_index >= states.len() {
+            panic!("Milestone index out of range");
+        }
+        let mut state = states.get(milestone_index).unwrap();
+        if state.status != MilestoneStateStatus::Pending
+            && state.status != MilestoneStateStatus::Rejected
+        {
+            panic!("Milestone must be Pending or Rejected to submit");
+        }
+
+        state.status = MilestoneStateStatus::Submitted;
+        state.delivery_hash = Some(delivery_hash.clone());
+        state.rejection_hash = None;
+        states.set(milestone_index, state);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::EscrowMilestonesV2(escrow_id), &states);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::EscrowMilestonesV2(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_milestone_submitted(&env, escrow_id, milestone_index, delivery_hash);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Buyer (or arbiter) approves a submitted milestone, releasing its
+    /// proportional share (`amount * release_bps / 10_000`) to the seller.
+    /// The final milestone releases any rounding remainder.
+    pub fn approve_proportional_milestone(
+        env: Env,
+        caller: Address,
+        escrow_id: u32,
+        milestone_index: u32,
+    ) {
+        caller.require_auth();
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+        if caller != escrow.buyer && caller != escrow.arbiter {
+            panic!("Only buyer or arbiter can approve milestones");
+        }
+        if escrow.status != EscrowStatus::Active {
+            panic!("Escrow is not active");
+        }
+
+        let mut states: Vec<MilestoneState> = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::EscrowMilestonesV2(escrow_id))
+            .expect("No BPS milestones for this escrow");
+
+        if milestone_index >= states.len() {
+            panic!("Milestone index out of range");
+        }
+        let mut state = states.get(milestone_index).unwrap();
+        if state.status != MilestoneStateStatus::Submitted {
+            panic!("Milestone must be Submitted before approval");
+        }
+
+        // Calculate release amount using bps; final milestone gets remainder
+        let is_last = milestone_index == states.len() - 1;
+        let amount_released = if is_last {
+            // Sum already-released amounts to compute remainder
+            let mut already_released: i128 = 0;
+            for i in 0..states.len() - 1 {
+                let s = states.get(i).unwrap();
+                if s.status == MilestoneStateStatus::Approved {
+                    already_released += escrow.amount * s.release_bps as i128 / 10_000;
+                }
+            }
+            escrow.amount - already_released
+        } else {
+            escrow.amount * state.release_bps as i128 / 10_000
+        };
+
+        let token_client = token::Client::new(&env, &escrow.token);
+        token_client.transfer(
+            &env.current_contract_address(),
+            &escrow.seller,
+            &amount_released,
+        );
+
+        state.status = MilestoneStateStatus::Approved;
+        states.set(milestone_index, state);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::EscrowMilestonesV2(escrow_id), &states);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::EscrowMilestonesV2(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        // Auto-transition escrow to Released when all milestones are terminal
+        let mut all_terminal = true;
+        for i in 0..states.len() {
+            let s = states.get(i).unwrap();
+            if s.status == MilestoneStateStatus::Pending
+                || s.status == MilestoneStateStatus::Submitted
+            {
+                all_terminal = false;
+                break;
+            }
+        }
+        if all_terminal {
+            escrow.status = EscrowStatus::Released;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Escrow(escrow_id), &escrow);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Escrow(escrow_id),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+        }
+
+        events::emit_milestone_approved(&env, escrow_id, milestone_index, amount_released);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Buyer rejects a submitted milestone, returning it to `Pending` state.
+    /// The seller can re-submit after addressing the buyer's concerns.
+    pub fn reject_milestone(
+        env: Env,
+        buyer: Address,
+        escrow_id: u32,
+        milestone_index: u32,
+        rejection_hash: BytesN<32>,
+    ) {
+        buyer.require_auth();
+
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+        if escrow.buyer != buyer {
+            panic!("Only the escrow buyer may reject milestones");
+        }
+        if escrow.status != EscrowStatus::Active {
+            panic!("Escrow is not active");
+        }
+
+        let mut states: Vec<MilestoneState> = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::EscrowMilestonesV2(escrow_id))
+            .expect("No BPS milestones for this escrow");
+
+        if milestone_index >= states.len() {
+            panic!("Milestone index out of range");
+        }
+        let mut state = states.get(milestone_index).unwrap();
+        if state.status != MilestoneStateStatus::Submitted {
+            panic!("Only a Submitted milestone can be rejected");
+        }
+
+        state.status = MilestoneStateStatus::Rejected;
+        state.rejection_hash = Some(rejection_hash);
+        states.set(milestone_index, state);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::EscrowMilestonesV2(escrow_id), &states);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::EscrowMilestonesV2(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_milestone_rejected(&env, escrow_id, milestone_index);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Read the BPS milestone state schedule for an escrow.
+    pub fn get_bps_milestones(env: Env, escrow_id: u32) -> Vec<MilestoneState> {
+        env.storage()
+            .persistent()
+            .get(&DataKey2::EscrowMilestonesV2(escrow_id))
+            .expect("No BPS milestones for this escrow")
+    }
+
 }
 
 #[cfg(test)]
@@ -4522,3 +4877,5 @@ mod test_seller_veto;
 
 #[cfg(test)]
 mod test_inspector;
+#[cfg(test)]
+mod test_milestone_bps;

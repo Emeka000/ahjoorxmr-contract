@@ -1354,3 +1354,32 @@ pub fn emit_payment_indexed_by_external_id(e: &Env, payment_id: u32, ext_id: sor
         (payment_id, ext_id),
     );
 }
+
+// ── #329: Failed Auto-Debit Retry Queue Events ────────────────────────────────
+
+pub fn emit_debit_failed(
+    e: &Env,
+    record_id: u32,
+    plan_id: u32,
+    attempt_number: u32,
+    next_retry_ledger: u64,
+) {
+    e.events().publish(
+        (soroban_sdk::Symbol::new(e, "DebitFailed"),),
+        (record_id, plan_id, attempt_number, next_retry_ledger),
+    );
+}
+
+pub fn emit_debit_retry_succeeded(e: &Env, record_id: u32, plan_id: u32, amount: i128) {
+    e.events().publish(
+        (soroban_sdk::Symbol::new(e, "DebitRetrySucceeded"),),
+        (record_id, plan_id, amount),
+    );
+}
+
+pub fn emit_debit_abandoned(e: &Env, record_id: u32, plan_id: u32) {
+    e.events().publish(
+        (soroban_sdk::Symbol::new(e, "DebitAbandoned"),),
+        (record_id, plan_id),
+    );
+}

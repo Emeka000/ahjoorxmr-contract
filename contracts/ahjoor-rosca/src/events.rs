@@ -1317,3 +1317,59 @@ pub struct CreditScoreUpdated {
 pub fn emit_credit_score_updated(e: &Env, member: Address, old_score: i128, new_score: i128, reason: soroban_sdk::Symbol) {
     CreditScoreUpdated { member, old_score, new_score, reason }.publish(e);
 }
+
+// ── #330: Contribution Delegation Events ─────────────────────────────────────
+
+/// Event: Member granted contribution delegation to a proxy (#330)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct DelegationGranted {
+    pub group_id: u32,
+    pub member: Address,
+    pub proxy: Address,
+    pub expiry_ledger: u64,
+}
+
+/// Event: Member revoked contribution delegation (#330)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ContribDelegationRevoked {
+    pub group_id: u32,
+    pub member: Address,
+    pub proxy: Address,
+}
+
+pub fn emit_delegation_granted(e: &Env, group_id: u32, member: Address, proxy: Address, expiry_ledger: u64) {
+    DelegationGranted { group_id, member, proxy, expiry_ledger }.publish(e);
+}
+
+pub fn emit_contribution_delegation_revoked(e: &Env, group_id: u32, member: Address, proxy: Address) {
+    ContribDelegationRevoked { group_id, member, proxy }.publish(e);
+}
+
+// ── #331: Group Split Events ──────────────────────────────────────────────────
+
+/// Event: Group split proposed (#331)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct GroupSplitProposed {
+    pub source_group_id: u32,
+    pub proposal_id: u32,
+}
+
+/// Event: Group split executed (#331)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct GroupSplitExecuted {
+    pub source_group_id: u32,
+    pub group_a_id: u32,
+    pub group_b_id: u32,
+}
+
+pub fn emit_group_split_proposed(e: &Env, source_group_id: u32, proposal_id: u32) {
+    GroupSplitProposed { source_group_id, proposal_id }.publish(e);
+}
+
+pub fn emit_group_split_executed(e: &Env, source_group_id: u32, group_a_id: u32, group_b_id: u32) {
+    GroupSplitExecuted { source_group_id, group_a_id, group_b_id }.publish(e);
+}

@@ -1008,3 +1008,19 @@ pub fn emit_inspector_replaced(e: &Env, escrow_id: u32, old_inspector: Address, 
         (escrow_id, old_inspector, new_inspector),
     );
 }
+
+// ── #332: Milestone BPS Events ────────────────────────────────────────────────
+
+pub fn emit_milestone_submitted(e: &Env, escrow_id: u32, milestone_index: u32, delivery_hash: BytesN<32>) {
+    e.events().publish(
+        (soroban_sdk::Symbol::new(e, "MilestoneSubmitted"),),
+        (escrow_id, milestone_index, delivery_hash),
+    );
+}
+
+pub fn emit_milestone_rejected(e: &Env, escrow_id: u32, milestone_index: u32) {
+    e.events().publish(
+        (soroban_sdk::Symbol::new(e, "MilestoneRejected"),),
+        (escrow_id, milestone_index),
+    );
+}

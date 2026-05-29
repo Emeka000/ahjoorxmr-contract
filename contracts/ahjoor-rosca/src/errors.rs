@@ -146,4 +146,20 @@ pub enum ExtError {
     InsufficientCreditScore = 83,
     /// Round duration is out of the configured bounds.
     RoundDurationOutOfBounds = 84,
+    /// Contribution delegation has passed its expiry ledger (#330).
+    DelegationExpired = 85,
+    /// Caller is not the registered proxy for this member (#330).
+    NotContribDelegate = 86,
+    /// Split proposal not found (#331).
+    SplitProposalNotFound = 87,
+    /// Member list for split is invalid (overlap or missing members) (#331).
+    SplitMembersInvalid = 88,
+    /// Split confirmation window has closed (#331).
+    SplitConfirmationWindowClosed = 89,
+    /// Group has already been split (#331).
+    SourceGroupAlreadySplit = 90,
+    /// Member already confirmed split participation (#331).
+    SplitAlreadyConfirmed = 91,
+    /// Not all members have confirmed; cannot execute split yet (#331).
+    SplitNotFullyConfirmed = 92,
 }
