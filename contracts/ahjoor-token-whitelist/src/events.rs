@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, Address, Env};
+use soroban_sdk::{contractevent, Address, BytesN, Env};
 
 /// Event: Contract initialized
 #[contractevent]
@@ -39,6 +39,32 @@ pub struct AdminTransferred {
     pub new_admin: Address,
 }
 
+/// Event: Token temporarily suspended
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TokenSuspended {
+    pub token: Address,
+    pub expiry_ledger: u32,
+    pub reason_hash: BytesN<32>,
+}
+
+/// Event: Token suspension lifted early by admin
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TokenSuspensionLifted {
+    pub token: Address,
+    pub lifted_by: Address,
+    pub ledger: u32,
+}
+
+/// Event: Token automatically reinstated after suspension expiry
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TokenAutoReinstated {
+    pub token: Address,
+    pub ledger: u32,
+}
+
 // --- Helper Emission Functions ---
 
 pub fn emit_contract_initialized(e: &Env, admin: Address) {
@@ -67,4 +93,26 @@ pub fn emit_admin_transferred(e: &Env, old_admin: Address, new_admin: Address) {
         new_admin,
     }
     .publish(e);
+}
+
+pub fn emit_token_suspended(e: &Env, token: Address, expiry_ledger: u32, reason_hash: BytesN<32>) {
+    TokenSuspended {
+        token,
+        expiry_ledger,
+        reason_hash,
+    }
+    .publish(e);
+}
+
+pub fn emit_token_suspension_lifted(e: &Env, token: Address, lifted_by: Address, ledger: u32) {
+    TokenSuspensionLifted {
+        token,
+        lifted_by,
+        ledger,
+    }
+    .publish(e);
+}
+
+pub fn emit_token_auto_reinstated(e: &Env, token: Address, ledger: u32) {
+    TokenAutoReinstated { token, ledger }.publish(e);
 }
