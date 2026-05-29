@@ -4340,88 +4340,45 @@ fn test_authorize_payment_succeeds() {
     let merchant = Address::generate(&s.env);
     s.token_admin_client.mint(&customer, &1000);
 
-    let pid = s.client.create_payment(
-        &customer,
-        &merchant,
-        &300,
-        &s.token_addr,
-        &None,
-        &None,
-        &None,
-    );
-    s.env.ledger().set_timestamp(1000);
-    s.client.authorize_payment(&merchant, &pid, &3600u64);
+    s.env.ledger().set_sequence_number(100);
+    let pid = s
+        .client
+        .authorize_payment(&merchant, &customer, &s.token_addr, &300, &200u64);
 
     let payment = s.client.get_payment(&pid);
     assert_eq!(payment.status, PaymentStatus::Authorized);
-    assert_eq!(payment.capture_deadline, 4600); // 1000 + 3600
+    assert_eq!(payment.capture_deadline, 200);
     assert_eq!(s.token_client.balance(&s.client.address), 300);
+    assert_eq!(s.token_client.balance(&customer), 700);
     assert_eq!(s.token_client.balance(&merchant), 0);
 }
 
 #[test]
-#[should_panic(expected = "Only the payment merchant can authorize")]
-fn test_authorize_payment_non_merchant_panics() {
+#[should_panic(expected = "capture_deadline_ledger must be in the future")]
+fn test_authorize_payment_past_deadline_panics() {
     let s = setup();
     s.init();
     let customer = Address::generate(&s.env);
     let merchant = Address::generate(&s.env);
-    let stranger = Address::generate(&s.env);
     s.token_admin_client.mint(&customer, &1000);
 
-    let pid = s.client.create_payment(
-        &customer,
-        &merchant,
-        &300,
-        &s.token_addr,
-        &None,
-        &None,
-        &None,
-    );
-    s.client.authorize_payment(&stranger, &pid, &3600u64);
+    s.env.ledger().set_sequence_number(100);
+    s.client
+        .authorize_payment(&merchant, &customer, &s.token_addr, &300, &100u64);
 }
 
 #[test]
-#[should_panic(expected = "capture_window_seconds must be positive")]
-fn test_authorize_payment_zero_window_panics() {
+#[should_panic(expected = "Payment amount must be positive")]
+fn test_authorize_payment_zero_amount_panics() {
     let s = setup();
     s.init();
     let customer = Address::generate(&s.env);
     let merchant = Address::generate(&s.env);
     s.token_admin_client.mint(&customer, &1000);
 
-    let pid = s.client.create_payment(
-        &customer,
-        &merchant,
-        &300,
-        &s.token_addr,
-        &None,
-        &None,
-        &None,
-    );
-    s.client.authorize_payment(&merchant, &pid, &0u64);
-}
-
-#[test]
-#[should_panic(expected = "Only pending payments can be authorized")]
-fn test_authorize_already_completed_panics() {
-    let s = setup();
-    s.init();
-    let customer = Address::generate(&s.env);
-    let merchant = Address::generate(&s.env);
-    s.token_admin_client.mint(&customer, &1000);
-
-    let pid = s.client.create_payment(
-        &customer,
-        &merchant,
-        &300,
-        &s.token_addr,
-        &None,
-        &None,
-        &None,
-    );
-    s.client.complete_payment(&pid);
-    s.client.authorize_payment(&merchant, &pid, &3600u64);
+    s.env.ledger().set_sequence_number(100);
+    s.client
+        .authorize_payment(&merchant, &customer, &s.token_addr, &0, &200u64);
 }
 
 #[test]
@@ -4432,19 +4389,12 @@ fn test_capture_authorized_payment_within_window() {
     let merchant = Address::generate(&s.env);
     s.token_admin_client.mint(&customer, &1000);
 
-    let pid = s.client.create_payment(
-        &customer,
-        &merchant,
-        &300,
-        &s.token_addr,
-        &None,
-        &None,
-        &None,
-    );
-    s.env.ledger().set_timestamp(1000);
-    s.client.authorize_payment(&merchant, &pid, &3600u64);
+    s.env.ledger().set_sequence_number(100);
+    let pid = s
+        .client
+        .authorize_payment(&merchant, &customer, &s.token_addr, &300, &200u64);
 
-    s.env.ledger().set_timestamp(2000);
+    s.env.ledger().set_sequence_number(150);
     s.client.capture_payment(&merchant, &pid);
 
     let payment = s.client.get_payment(&pid);
@@ -4454,7 +4404,6 @@ fn test_capture_authorized_payment_within_window() {
 }
 
 #[test]
-#[should_panic(expected = "Capture window has expired")]
 fn test_capture_after_deadline_panics() {
     let s = setup();
     s.init();
@@ -4462,20 +4411,14 @@ fn test_capture_after_deadline_panics() {
     let merchant = Address::generate(&s.env);
     s.token_admin_client.mint(&customer, &1000);
 
-    let pid = s.client.create_payment(
-        &customer,
-        &merchant,
-        &300,
-        &s.token_addr,
-        &None,
-        &None,
-        &None,
-    );
-    s.env.ledger().set_timestamp(1000);
-    s.client.authorize_payment(&merchant, &pid, &3600u64);
+    s.env.ledger().set_sequence_number(100);
+    let pid = s
+        .client
+        .authorize_payment(&merchant, &customer, &s.token_addr, &300, &200u64);
 
-    s.env.ledger().set_timestamp(5000); // past deadline (4600)
-    s.client.capture_payment(&merchant, &pid);
+    s.env.ledger().set_sequence_number(201); // post deadline
+    let res = s.client.try_capture_payment(&merchant, &pid);
+    assert_eq!(res.unwrap_err().unwrap(), Error::CapturePastDeadline.into());
 }
 
 #[test]
@@ -4507,20 +4450,12 @@ fn test_expire_authorized_payment_refunds_customer() {
     let merchant = Address::generate(&s.env);
     s.token_admin_client.mint(&customer, &1000);
 
-    let pid = s.client.create_payment(
-        &customer,
-        &merchant,
-        &300,
-        &s.token_addr,
-        &None,
-        &None,
-        &None,
-    );
-    s.env.ledger().set_timestamp(1000);
-    s.client.authorize_payment(&merchant, &pid, &3600u64);
+    s.env.ledger().set_sequence_number(100);
+    let pid = s
+        .client
+        .authorize_payment(&merchant, &customer, &s.token_addr, &300, &200u64);
 
-    // Advance past capture_deadline
-    s.env.ledger().set_timestamp(5000);
+    s.env.ledger().set_sequence_number(201);
     s.client.expire_payment(&pid);
 
     let payment = s.client.get_payment(&pid);
@@ -4538,16 +4473,10 @@ fn test_dispute_authorized_payment() {
     let merchant = Address::generate(&s.env);
     s.token_admin_client.mint(&customer, &1000);
 
-    let pid = s.client.create_payment(
-        &customer,
-        &merchant,
-        &300,
-        &s.token_addr,
-        &None,
-        &None,
-        &None,
-    );
-    s.client.authorize_payment(&merchant, &pid, &3600u64);
+    s.env.ledger().set_sequence_number(100);
+    let pid = s
+        .client
+        .authorize_payment(&merchant, &customer, &s.token_addr, &300, &200u64);
 
     let reason = String::from_str(&s.env, "Unauthorized charge");
     s.client.dispute_payment(&customer, &pid, &reason);
@@ -4564,31 +4493,15 @@ fn test_bulk_expire_authorized_payments() {
     let merchant = Address::generate(&s.env);
     s.token_admin_client.mint(&customer, &1000);
 
-    let pid0 = s.client.create_payment(
-        &customer,
-        &merchant,
-        &100,
-        &s.token_addr,
-        &None,
-        &None,
-        &None,
-    );
-    let pid1 = s.client.create_payment(
-        &customer,
-        &merchant,
-        &200,
-        &s.token_addr,
-        &None,
-        &None,
-        &None,
-    );
+    s.env.ledger().set_sequence_number(100);
+    let pid0 = s
+        .client
+        .authorize_payment(&merchant, &customer, &s.token_addr, &100, &200u64);
+    let pid1 = s
+        .client
+        .authorize_payment(&merchant, &customer, &s.token_addr, &200, &200u64);
 
-    s.env.ledger().set_timestamp(1000);
-    s.client.authorize_payment(&merchant, &pid0, &3600u64);
-    s.client.authorize_payment(&merchant, &pid1, &3600u64);
-
-    // Advance past both capture_deadlines
-    s.env.ledger().set_timestamp(5000);
+    s.env.ledger().set_sequence_number(201);
     s.client
         .bulk_expire_payments(&s.admin, &vec![&s.env, pid0, pid1]);
 
@@ -4605,22 +4518,38 @@ fn test_authorization_events_emitted() {
     let merchant = Address::generate(&s.env);
     s.token_admin_client.mint(&customer, &1000);
 
-    let pid = s.client.create_payment(
-        &customer,
-        &merchant,
-        &300,
-        &s.token_addr,
-        &None,
-        &None,
-        &None,
-    );
-    s.env.ledger().set_timestamp(1000);
-    s.client.authorize_payment(&merchant, &pid, &3600u64);
+    s.env.ledger().set_sequence_number(100);
+    let pid = s
+        .client
+        .authorize_payment(&merchant, &customer, &s.token_addr, &300, &200u64);
+    s.env.ledger().set_sequence_number(150);
     s.client.capture_payment(&merchant, &pid);
 
     let events = s.env.events().all();
-    // Should have at least PaymentAuthorized, PaymentCaptured, PaymentCompleted, PaymentStatusChanged (x2)
-    assert!(events.len() >= 5);
+    // Should include PaymentAuthorized, PaymentCaptured, PaymentCompleted and PaymentStatusChanged.
+    assert!(events.len() >= 4);
+}
+
+#[test]
+fn test_void_authorization_returns_funds_to_customer() {
+    let s = setup();
+    s.init();
+    let customer = Address::generate(&s.env);
+    let merchant = Address::generate(&s.env);
+    s.token_admin_client.mint(&customer, &1000);
+
+    s.env.ledger().set_sequence_number(100);
+    let pid = s
+        .client
+        .authorize_payment(&merchant, &customer, &s.token_addr, &300, &200u64);
+
+    s.client.void_authorization(&customer, &pid);
+
+    let payment = s.client.get_payment(&pid);
+    assert_eq!(payment.status, PaymentStatus::Expired);
+    assert_eq!(s.token_client.balance(&customer), 1000);
+    assert_eq!(s.token_client.balance(&merchant), 0);
+    assert_eq!(s.token_client.balance(&s.client.address), 0);
 }
 
 // ===========================================================================

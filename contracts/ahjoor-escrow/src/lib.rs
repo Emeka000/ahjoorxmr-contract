@@ -33,6 +33,12 @@ pub enum EscrowStatus {
     AwaitingCollateral = 9,
     /// Seller has proposed a role transfer; buyer has a veto window (#244).
     AwaitingBuyerVetoDecision = 10,
+    /// #272: Seller marked work complete; awaiting inspector verdict.
+    AwaitingInspection = 11,
+    /// #272: Inspector approved; buyer may release.
+    InspectionPassed = 12,
+    /// #272: Inspector rejected; buyer/seller may negotiate or dispute.
+    InspectionFailed = 13,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +88,8 @@ pub struct EscrowCreateRequest {
     pub release_threshold_price: Option<i128>,
     pub arbiter_fee_bps: Option<u32>,
     pub dispute_default_winner: Option<u32>, // 0 = Buyer, 1 = Seller
+    /// Optional auto-renewal configuration for recurring service agreements.
+    pub auto_renew_config: Option<AutoRenewConfig>,
 }
 
 #[contracttype]
@@ -130,6 +138,12 @@ pub struct EscrowExtensions {
     pub collateral_amount: i128,
     /// #241: Optional pre-committed delivery proof hash set by buyer at creation.
     pub delivery_proof_hash: Option<BytesN<32>>,
+    /// #272: Optional inspector address for three-party quality gate.
+    pub inspector: Option<Address>,
+    /// Auto-renewal config (max_renewals + renewal_interval_ledgers); None = no auto-renewal.
+    pub auto_renew_config: Option<AutoRenewConfig>,
+    /// Number of renewal cycles completed so far (incremented on each successful renewal).
+    pub renewals_completed: u32,
 }
 
 #[contracttype]
@@ -303,12 +317,41 @@ pub enum DataKey {
     PendingVerdict(u32),
     /// (escrow_id) → (caller, reason_hash) for dispute resolution flag
     ResolutionFlag(u32),
+    /// Amendment proposal for an escrow (escrow_id → AmendmentProposal)
+    AmendmentProposal(u32),
+    /// Amendment proposal nonce counter per escrow (escrow_id → u32)
+    AmendmentNonce(u32),
+    /// Admin-configurable amendment proposal expiry window in seconds
+    AmendmentExpirySeconds,
+    /// #272: Inspector report per escrow
+    InspectorReport(u32),
+    /// #272: Pending inspector replacement
+    InspectorReplacement(u32),
+    /// Auto-renewal: ordered list of successor escrow IDs for a given original escrow
+    RenewalHistory(u32),
+    /// Auto-renewal: number of renewals completed for a given escrow chain (keyed by original ID)
+    RenewalsCompleted(u32),
+    /// Auto-renewal: whether the buyer has cancelled future renewals for this escrow
+    AutoRenewalCancelled(u32),
 }
 
 const MAX_PROTOCOL_FEE_BPS: u32 = 200; // 2%
 const MAX_ARBITER_FEE_BPS: u32 = 1_000; // 10%
 const DEFAULT_RESOLUTION_COOLING_OFF_SECONDS: u64 = 24 * 60 * 60; // 24 hours
 const DEFAULT_SELLER_TRANSFER_VETO_WINDOW: u32 = 100; // ledgers
+const DEFAULT_AMENDMENT_EXPIRY_SECONDS: u64 = 7 * 24 * 60 * 60; // 7 days
+
+/// Auto-renewal configuration for recurring service agreements.
+/// When provided at escrow creation, the escrow will automatically re-fund
+/// and restart at the end of each period for up to `max_renewals` cycles.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AutoRenewConfig {
+    /// Maximum number of automatic renewal cycles.
+    pub max_renewals: u32,
+    /// Duration of each renewal period in ledgers (used to compute new deadline).
+    pub renewal_interval_ledgers: u32,
+}
 
 /// #244: Pending seller role transfer proposal.
 #[contracttype]
@@ -317,6 +360,50 @@ pub struct SellerTransferProposal {
     pub original_seller: Address,
     pub new_seller: Address,
     pub veto_deadline: u32, // ledger sequence
+}
+
+/// Mutual amendment proposal for post-creation term changes.
+/// Both buyer and seller must sign the same proposal for it to take effect.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AmendmentProposal {
+    /// Incrementing nonce so each proposal is unique even if terms repeat.
+    pub nonce: u32,
+    /// Proposer address (buyer or seller).
+    pub proposer: Address,
+    /// New escrow amount, or None to keep current.
+    pub new_amount: Option<i128>,
+    /// New deadline (unix timestamp), or None to keep current.
+    pub new_deadline: Option<u64>,
+    /// New metadata hash, or None to keep current.
+    pub new_metadata_hash: Option<BytesN<32>>,
+    /// Ledger timestamp when this proposal was created.
+    pub proposed_at: u64,
+    /// Ledger timestamp after which this proposal expires.
+    pub expires_at: u64,
+    /// Whether the buyer has signed this proposal.
+    pub buyer_signed: bool,
+    /// Whether the seller has signed this proposal.
+    pub seller_signed: bool,
+}
+
+/// #272: Inspector report stored on-chain.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InspectorReport {
+    pub inspector: Address,
+    pub approved: bool,
+    pub report_hash: BytesN<32>,
+    pub submitted_at: u64,
+}
+
+/// #272: Pending inspector replacement request.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InspectorReplacement {
+    pub new_inspector: Address,
+    pub buyer_signed: bool,
+    pub seller_signed: bool,
 }
 
 /// Verdict recorded by arbiter during cooling-off period.
@@ -412,6 +499,7 @@ impl AhjoorEscrowContract {
             release_threshold_price: None,
             arbiter_fee_bps: None,
             dispute_default_winner: None,
+            auto_renew_config: None,
         };
 
         Self::create_escrow_core(&env, &buyer, request)
@@ -454,6 +542,7 @@ impl AhjoorEscrowContract {
             release_threshold_price: None,
             arbiter_fee_bps: None,
             dispute_default_winner: None,
+            auto_renew_config: None,
         };
 
         Self::create_escrow_core(&env, &buyer, request)
@@ -463,6 +552,47 @@ impl AhjoorEscrowContract {
     pub fn create_escrow_v2(env: Env, buyer: Address, request: EscrowCreateRequest) -> u32 {
         Self::require_not_paused(&env);
         buyer.require_auth();
+
+        Self::create_escrow_core(&env, &buyer, request)
+    }
+
+    /// Create a new escrow with an AutoRenewConfig for recurring service agreements.
+    /// Funds are transferred from buyer to contract immediately.
+    /// Returns the escrow ID.
+    pub fn create_escrow_with_auto_renew(
+        env: Env,
+        buyer: Address,
+        seller: Address,
+        arbiter: Address,
+        amount: i128,
+        token: Address,
+        deadline: u64,
+        metadata_hash: Option<BytesN<32>>,
+        auto_renew_config: AutoRenewConfig,
+    ) -> u32 {
+        Self::require_not_paused(&env);
+        buyer.require_auth();
+
+        let request = EscrowCreateRequest {
+            seller,
+            arbiter,
+            amount,
+            token,
+            deadline,
+            metadata_hash,
+            sellers: Vec::new(&env),
+            auto_renew: true,
+            renewal_count: auto_renew_config.max_renewals,
+            buyer_inactivity_secs: 0,
+            min_lock_until: None,
+            release_base: None,
+            release_quote: None,
+            release_comparison: None,
+            release_threshold_price: None,
+            arbiter_fee_bps: None,
+            dispute_default_winner: None,
+            auto_renew_config: Some(auto_renew_config),
+        };
 
         Self::create_escrow_core(&env, &buyer, request)
     }
@@ -511,6 +641,7 @@ impl AhjoorEscrowContract {
                     release_threshold_price: None,
                     arbiter_fee_bps: None,
                     dispute_default_winner: None,
+                    auto_renew_config: None,
                 },
             );
 
@@ -529,6 +660,134 @@ impl AhjoorEscrowContract {
         );
 
         created_ids
+    }
+
+    // ─── #272: Escrow Third-Party Inspector Role ─────────────────────────────
+
+    /// Create an escrow with an optional inspector for quality gate.
+    pub fn create_escrow_with_inspector(
+        env: Env,
+        buyer: Address,
+        request: EscrowCreateRequest,
+        inspector: Option<Address>,
+    ) -> u32 {
+        Self::require_not_paused(&env);
+        buyer.require_auth();
+        let escrow_id = Self::create_escrow_core(&env, &buyer, request);
+        if let Some(ref insp) = inspector {
+            let mut escrow: Escrow = env
+                .storage().persistent().get(&DataKey::Escrow(escrow_id)).expect("Escrow not found");
+            escrow.extensions.inspector = Some(insp.clone());
+            env.storage().persistent().set(&DataKey::Escrow(escrow_id), &escrow);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Escrow(escrow_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
+            );
+        }
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        escrow_id
+    }
+
+    /// Seller marks work complete. If inspector is set, moves to AwaitingInspection.
+    pub fn seller_mark_complete(env: Env, seller: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        seller.require_auth();
+        let mut escrow: Escrow = env
+            .storage().persistent().get(&DataKey::Escrow(escrow_id)).expect("Escrow not found");
+        if escrow.seller != seller { panic!("Only seller can mark complete"); }
+        if !Self::is_open_escrow_status(escrow.status) { panic!("Escrow is not active"); }
+        if escrow.extensions.inspector.is_none() { panic!("No inspector set; use release_escrow directly"); }
+        escrow.status = EscrowStatus::AwaitingInspection;
+        env.storage().persistent().set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Escrow(escrow_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
+        );
+        events::emit_seller_marked_complete(&env, escrow_id, seller);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Inspector submits their verdict. Moves status to InspectionPassed or InspectionFailed.
+    pub fn submit_inspection_report(
+        env: Env,
+        inspector: Address,
+        escrow_id: u32,
+        approved: bool,
+        report_hash: BytesN<32>,
+    ) {
+        Self::require_not_paused(&env);
+        inspector.require_auth();
+        let mut escrow: Escrow = env
+            .storage().persistent().get(&DataKey::Escrow(escrow_id)).expect("Escrow not found");
+        if escrow.status != EscrowStatus::AwaitingInspection {
+            panic!("Escrow is not awaiting inspection");
+        }
+        let stored_inspector = escrow.extensions.inspector.clone().expect("No inspector set");
+        if inspector != stored_inspector { panic!("Only the assigned inspector can submit a report"); }
+        let report = InspectorReport {
+            inspector: inspector.clone(),
+            approved,
+            report_hash: report_hash.clone(),
+            submitted_at: env.ledger().timestamp(),
+        };
+        env.storage().persistent().set(&DataKey::InspectorReport(escrow_id), &report);
+        env.storage().persistent().extend_ttl(
+            &DataKey::InspectorReport(escrow_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
+        );
+        escrow.status = if approved { EscrowStatus::InspectionPassed } else { EscrowStatus::InspectionFailed };
+        env.storage().persistent().set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Escrow(escrow_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
+        );
+        events::emit_inspection_report_submitted(&env, escrow_id, inspector, approved, report_hash);
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Replace inspector by mutual agreement (both buyer and seller must call).
+    pub fn replace_inspector(env: Env, caller: Address, escrow_id: u32, new_inspector: Address) {
+        Self::require_not_paused(&env);
+        caller.require_auth();
+        let escrow: Escrow = env
+            .storage().persistent().get(&DataKey::Escrow(escrow_id)).expect("Escrow not found");
+        if caller != escrow.buyer && caller != escrow.seller {
+            panic!("Only buyer or seller can propose inspector replacement");
+        }
+        if escrow.extensions.inspector.is_none() { panic!("No inspector set on this escrow"); }
+        let key = DataKey::InspectorReplacement(escrow_id);
+        let mut replacement: InspectorReplacement = env
+            .storage().persistent().get(&key)
+            .unwrap_or(InspectorReplacement {
+                new_inspector: new_inspector.clone(),
+                buyer_signed: false,
+                seller_signed: false,
+            });
+        if replacement.new_inspector != new_inspector {
+            replacement = InspectorReplacement { new_inspector: new_inspector.clone(), buyer_signed: false, seller_signed: false };
+        }
+        if caller == escrow.buyer { replacement.buyer_signed = true; } else { replacement.seller_signed = true; }
+        if replacement.buyer_signed && replacement.seller_signed {
+            let mut updated = escrow.clone();
+            let old_inspector = updated.extensions.inspector.clone().unwrap();
+            updated.extensions.inspector = Some(new_inspector.clone());
+            if updated.status == EscrowStatus::AwaitingInspection || updated.status == EscrowStatus::InspectionFailed {
+                updated.status = EscrowStatus::Active;
+            }
+            env.storage().persistent().set(&DataKey::Escrow(escrow_id), &updated);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Escrow(escrow_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
+            );
+            env.storage().persistent().remove(&key);
+            events::emit_inspector_replaced(&env, escrow_id, old_inspector, new_inspector);
+        } else {
+            env.storage().persistent().set(&key, &replacement);
+            env.storage().persistent().extend_ttl(
+                &key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
+            );
+        }
+        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get the inspector report for an escrow.
+    pub fn get_inspector_report(env: Env, escrow_id: u32) -> Option<InspectorReport> {
+        env.storage().persistent().get(&DataKey::InspectorReport(escrow_id))
     }
 
     fn create_escrow_core(env: &Env, buyer: &Address, request: EscrowCreateRequest) -> u32 {
@@ -550,6 +809,7 @@ impl AhjoorEscrowContract {
             release_threshold_price,
             arbiter_fee_bps,
             dispute_default_winner,
+            auto_renew_config,
         } = request;
 
         if amount <= 0 {
@@ -676,6 +936,9 @@ impl AhjoorEscrowContract {
                 collateral_deposit_deadline: 0,
                 collateral_amount: 0,
                 delivery_proof_hash: None,
+                inspector: None,
+                auto_renew_config,
+                renewals_completed: 0,
             },
         };
 
@@ -807,7 +1070,14 @@ impl AhjoorEscrowContract {
 
         let renewal_source = escrow.clone();
 
-        if !Self::is_open_escrow_status(escrow.status) {
+        // #272: Block release if inspection is pending
+        if escrow.status == EscrowStatus::AwaitingInspection {
+            panic!("InspectionPending: inspector must submit report before release");
+        }
+
+        if escrow.status == EscrowStatus::InspectionPassed {
+            // Allow release from InspectionPassed — fall through
+        } else if !Self::is_open_escrow_status(escrow.status) {
             panic!("Escrow is not active");
         }
 
@@ -1004,6 +1274,52 @@ impl AhjoorEscrowContract {
             .persistent()
             .set(&DataKey::Escrow(escrow_id), &escrow);
         env.storage().persistent().remove(&DataKey::RenewalAllowance(escrow_id));
+    }
+
+    /// Cancel future auto-renewals for an escrow configured with AutoRenewConfig.
+    /// Buyer can call this at any time before the current period's release.
+    /// After cancellation, no new renewal will be triggered on release.
+    pub fn cancel_auto_renewal(env: Env, buyer: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        buyer.require_auth();
+
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if buyer != escrow.buyer {
+            panic!("Only buyer can cancel auto-renewal");
+        }
+
+        if escrow.extensions.auto_renew_config.is_none() {
+            panic!("No AutoRenewConfig set on this escrow");
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::AutoRenewalCancelled(escrow_id), &true);
+        env.storage().persistent().extend_ttl(
+            &DataKey::AutoRenewalCancelled(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_auto_renewal_cancelled(&env, escrow_id);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Returns the ordered list of successor escrow IDs created by auto-renewals
+    /// for the given original escrow ID.
+    pub fn get_renewal_history(env: Env, escrow_id: u32) -> Vec<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RenewalHistory(escrow_id))
+            .unwrap_or(Vec::new(&env))
     }
 
     /// Release part of the escrowed funds to seller. Can be called by buyer or arbiter.
@@ -2951,6 +3267,9 @@ impl AhjoorEscrowContract {
                 collateral_deposit_deadline: 0,
                 collateral_amount: 0,
                 delivery_proof_hash: None,
+                inspector: None,
+                auto_renew_config: None,
+                renewals_completed: 0,
             },
         };
 
@@ -3144,6 +3463,9 @@ impl AhjoorEscrowContract {
                 collateral_deposit_deadline: 0,
                 collateral_amount: 0,
                 delivery_proof_hash: None,
+                inspector: None,
+                auto_renew_config: None,
+                renewals_completed: 0,
             },
         };
 
@@ -3756,7 +4078,7 @@ impl AhjoorEscrowContract {
     fn is_open_escrow_status(status: EscrowStatus) -> bool {
         matches!(
             status,
-            EscrowStatus::Active | EscrowStatus::PartiallyReleased
+            EscrowStatus::Active | EscrowStatus::PartiallyReleased | EscrowStatus::InspectionPassed
         )
     }
 
@@ -3782,6 +4104,134 @@ impl AhjoorEscrowContract {
     }
 
     fn try_auto_renew(env: &Env, old_escrow_id: u32, source: &Escrow) {
+        // ── New AutoRenewConfig path ──────────────────────────────────────────
+        if let Some(ref cfg) = source.extensions.auto_renew_config {
+            // Check if buyer has cancelled renewals for this escrow chain
+            let cancelled: bool = env
+                .storage()
+                .persistent()
+                .get(&DataKey::AutoRenewalCancelled(old_escrow_id))
+                .unwrap_or(false);
+            if cancelled {
+                return;
+            }
+
+            let renewals_completed = source.extensions.renewals_completed;
+
+            // Enforce max_renewals cap
+            if renewals_completed >= cfg.max_renewals {
+                return;
+            }
+
+            let renewal_index = renewals_completed + 1;
+
+            // Attempt to pull funds from buyer's pre-approved allowance
+            let token_client = token::Client::new(env, &source.token);
+            let transfer_result = token_client.try_transfer_from(
+                &env.current_contract_address(),
+                &source.buyer,
+                &env.current_contract_address(),
+                &source.amount,
+            );
+
+            if transfer_result.is_err() {
+                // Insufficient allowance — emit RenewalFailed and return gracefully
+                events::emit_renewal_failed(
+                    env,
+                    old_escrow_id,
+                    renewal_index,
+                    soroban_sdk::String::from_str(env, "InsufficientAllowance"),
+                );
+                return;
+            }
+
+            // Compute new deadline using renewal_interval_ledgers converted to seconds
+            // (Soroban ledger ≈ 5 s; we store interval in ledgers but deadline is unix timestamp)
+            let interval_secs = (cfg.renewal_interval_ledgers as u64) * 5;
+            let now = env.ledger().timestamp();
+            let new_deadline = now + interval_secs;
+
+            let new_escrow_id = Self::next_escrow_id(env);
+
+            let renewed = Escrow {
+                id: new_escrow_id,
+                buyer: source.buyer.clone(),
+                seller: source.seller.clone(),
+                arbiter: source.arbiter.clone(),
+                amount: source.amount,
+                token: source.token.clone(),
+                status: EscrowStatus::Active,
+                created_at: now,
+                deadline: new_deadline,
+                metadata_hash: source.metadata_hash.clone(),
+                sellers: source.sellers.clone(),
+                extensions: EscrowExtensions {
+                    auto_renew: source.extensions.auto_renew,
+                    renewal_count: source.extensions.renewal_count,
+                    renewals_remaining: source.extensions.renewals_remaining.saturating_sub(1),
+                    dispute_timeout_seconds: source.extensions.dispute_timeout_seconds,
+                    buyer_inactivity_secs: source.extensions.buyer_inactivity_secs,
+                    min_lock_until: source.extensions.min_lock_until,
+                    release_base: source.extensions.release_base.clone(),
+                    release_quote: source.extensions.release_quote.clone(),
+                    release_comparison: source.extensions.release_comparison,
+                    release_threshold_price: source.extensions.release_threshold_price,
+                    arbiter_fee_bps: source.extensions.arbiter_fee_bps,
+                    dispute_default_winner: source.extensions.dispute_default_winner,
+                    required_collateral_bps: source.extensions.required_collateral_bps,
+                    collateral_forfeit_bps: source.extensions.collateral_forfeit_bps,
+                    collateral_deposit_deadline: 0,
+                    collateral_amount: 0,
+                    delivery_proof_hash: source.extensions.delivery_proof_hash.clone(),
+                    inspector: source.extensions.inspector.clone(),
+                    auto_renew_config: Some(cfg.clone()),
+                    renewals_completed: renewal_index,
+                },
+            };
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::Escrow(new_escrow_id), &renewed);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Escrow(new_escrow_id),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+
+            // #150: Initialize LastBuyerAction for renewed escrow
+            if source.extensions.buyer_inactivity_secs > 0 {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::LastBuyerAction(new_escrow_id), &now);
+                env.storage().persistent().extend_ttl(
+                    &DataKey::LastBuyerAction(new_escrow_id),
+                    PERSISTENT_LIFETIME_THRESHOLD,
+                    PERSISTENT_BUMP_AMOUNT,
+                );
+            }
+
+            // Append new_escrow_id to the renewal history of the original escrow
+            // The "original" escrow is tracked by walking back: we store history keyed
+            // by old_escrow_id so callers can call get_renewal_history(original_id).
+            let history_key = DataKey::RenewalHistory(old_escrow_id);
+            let mut history: Vec<u32> = env
+                .storage()
+                .persistent()
+                .get(&history_key)
+                .unwrap_or(Vec::new(env));
+            history.push_back(new_escrow_id);
+            env.storage().persistent().set(&history_key, &history);
+            env.storage().persistent().extend_ttl(
+                &history_key,
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+
+            events::emit_escrow_auto_renewed_v2(env, old_escrow_id, new_escrow_id, renewal_index);
+            return;
+        }
+
+        // ── Legacy auto_renew path (backward-compatible) ─────────────────────
         if !source.extensions.auto_renew {
             return;
         }
@@ -3850,6 +4300,9 @@ impl AhjoorEscrowContract {
                 collateral_deposit_deadline: 0,
                 collateral_amount: 0,
                 delivery_proof_hash: source.extensions.delivery_proof_hash.clone(),
+                inspector: source.extensions.inspector.clone(),
+                auto_renew_config: None,
+                renewals_completed: 0,
             },
         };
 
@@ -4333,6 +4786,298 @@ impl AhjoorEscrowContract {
         let avg_x100 = ((total_score * 100) / count as u64) as u32;
         (avg_x100, count)
     }
+
+    // ─── Mutual Amendment Protocol ────────────────────────────────────────────
+
+    /// Admin sets the amendment proposal expiry window in seconds.
+    pub fn set_amendment_expiry_seconds(env: Env, admin: Address, expiry_seconds: u64) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can set amendment expiry");
+        }
+        if expiry_seconds == 0 {
+            panic!("Expiry must be positive");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::AmendmentExpirySeconds, &expiry_seconds);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Propose an amendment to escrow terms (amount, deadline, metadata_hash).
+    /// Caller must be the buyer or seller of the escrow.
+    /// At least one field must differ from the current escrow state.
+    /// Replaces any existing pending proposal.
+    pub fn propose_amendment(
+        env: Env,
+        proposer: Address,
+        escrow_id: u32,
+        new_amount: Option<i128>,
+        new_deadline: Option<u64>,
+        new_metadata_hash: Option<BytesN<32>>,
+    ) {
+        Self::require_not_paused(&env);
+        proposer.require_auth();
+
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if proposer != escrow.buyer && proposer != escrow.seller {
+            panic!("Only buyer or seller can propose an amendment");
+        }
+
+        if !Self::is_open_escrow_status(escrow.status) {
+            panic!("Escrow is not active");
+        }
+
+        // Validate at least one field is being changed
+        let amount_changed = new_amount.map_or(false, |a| a != escrow.amount);
+        let deadline_changed = new_deadline.map_or(false, |d| d != escrow.deadline);
+        let hash_changed = new_metadata_hash != escrow.metadata_hash;
+        if !amount_changed && !deadline_changed && !hash_changed {
+            panic!("Amendment must change at least one field");
+        }
+
+        // Validate proposed values
+        if let Some(amount) = new_amount {
+            if amount <= 0 {
+                panic!("Proposed amount must be positive");
+            }
+        }
+        if let Some(deadline) = new_deadline {
+            if deadline <= env.ledger().timestamp() {
+                panic!("Proposed deadline must be in the future");
+            }
+        }
+
+        let expiry_seconds: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AmendmentExpirySeconds)
+            .unwrap_or(DEFAULT_AMENDMENT_EXPIRY_SECONDS);
+
+        let now = env.ledger().timestamp();
+
+        // Increment nonce
+        let nonce: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AmendmentNonce(escrow_id))
+            .unwrap_or(0)
+            + 1;
+        env.storage()
+            .persistent()
+            .set(&DataKey::AmendmentNonce(escrow_id), &nonce);
+        env.storage().persistent().extend_ttl(
+            &DataKey::AmendmentNonce(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        let buyer_signed = proposer == escrow.buyer;
+        let seller_signed = proposer == escrow.seller;
+
+        let proposal = AmendmentProposal {
+            nonce,
+            proposer: proposer.clone(),
+            new_amount,
+            new_deadline,
+            new_metadata_hash,
+            proposed_at: now,
+            expires_at: now + expiry_seconds,
+            buyer_signed,
+            seller_signed,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::AmendmentProposal(escrow_id), &proposal);
+        env.storage().persistent().extend_ttl(
+            &DataKey::AmendmentProposal(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_amendment_proposed(
+            &env,
+            escrow_id,
+            nonce,
+            proposer,
+            new_amount,
+            new_deadline,
+            new_metadata_hash,
+            now + expiry_seconds,
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Sign an existing amendment proposal.
+    /// Caller must be the buyer or seller (the counterparty of the proposer).
+    /// When both parties have signed, the amendment is applied immediately.
+    pub fn sign_amendment(env: Env, signer: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        signer.require_auth();
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if signer != escrow.buyer && signer != escrow.seller {
+            panic!("Only buyer or seller can sign an amendment");
+        }
+
+        if !Self::is_open_escrow_status(escrow.status) {
+            panic!("Escrow is not active");
+        }
+
+        let mut proposal: AmendmentProposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AmendmentProposal(escrow_id))
+            .expect("No pending amendment proposal");
+
+        if env.ledger().timestamp() > proposal.expires_at {
+            panic!("Amendment proposal has expired");
+        }
+
+        // Record the signature
+        if signer == escrow.buyer {
+            if proposal.buyer_signed {
+                panic!("Buyer has already signed this proposal");
+            }
+            proposal.buyer_signed = true;
+        } else {
+            if proposal.seller_signed {
+                panic!("Seller has already signed this proposal");
+            }
+            proposal.seller_signed = true;
+        }
+
+        // If both parties have signed, apply the amendment
+        if proposal.buyer_signed && proposal.seller_signed {
+            let old_amount = escrow.amount;
+            let old_deadline = escrow.deadline;
+            let old_metadata_hash = escrow.metadata_hash.clone();
+
+            if let Some(new_amount) = proposal.new_amount {
+                let diff = new_amount - escrow.amount;
+                if diff > 0 {
+                    // Buyer must top up the difference
+                    let token_client = token::Client::new(&env, &escrow.token);
+                    token_client.transfer(&escrow.buyer, &env.current_contract_address(), &diff);
+                } else if diff < 0 {
+                    // Refund the difference to buyer
+                    let token_client = token::Client::new(&env, &escrow.token);
+                    token_client.transfer(&env.current_contract_address(), &escrow.buyer, &(-diff));
+                }
+                escrow.amount = new_amount;
+            }
+            if let Some(new_deadline) = proposal.new_deadline {
+                escrow.deadline = new_deadline;
+            }
+            if let Some(ref new_hash) = proposal.new_metadata_hash {
+                escrow.metadata_hash = Some(new_hash.clone());
+            }
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::Escrow(escrow_id), &escrow);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Escrow(escrow_id),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+
+            // Remove the applied proposal
+            env.storage()
+                .persistent()
+                .remove(&DataKey::AmendmentProposal(escrow_id));
+
+            events::emit_amendment_applied(
+                &env,
+                escrow_id,
+                proposal.nonce,
+                old_amount,
+                escrow.amount,
+                old_deadline,
+                escrow.deadline,
+                old_metadata_hash,
+                escrow.metadata_hash.clone(),
+            );
+        } else {
+            // Save updated signature state
+            env.storage()
+                .persistent()
+                .set(&DataKey::AmendmentProposal(escrow_id), &proposal);
+            env.storage().persistent().extend_ttl(
+                &DataKey::AmendmentProposal(escrow_id),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+
+            events::emit_amendment_signed(&env, escrow_id, proposal.nonce, signer);
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Cancel a pending amendment proposal.
+    /// Callable by either the buyer or seller.
+    pub fn cancel_amendment(env: Env, caller: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        caller.require_auth();
+
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if caller != escrow.buyer && caller != escrow.seller {
+            panic!("Only buyer or seller can cancel an amendment");
+        }
+
+        let proposal: AmendmentProposal = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AmendmentProposal(escrow_id))
+            .expect("No pending amendment proposal");
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AmendmentProposal(escrow_id));
+
+        events::emit_amendment_cancelled(&env, escrow_id, proposal.nonce, caller);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Query the current pending amendment proposal for an escrow.
+    pub fn get_amendment_proposal(env: Env, escrow_id: u32) -> Option<AmendmentProposal> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AmendmentProposal(escrow_id))
+    }
 }
 
 #[cfg(test)]
@@ -4349,3 +5094,9 @@ mod test_cooling_off;
 
 #[cfg(test)]
 mod test_seller_veto;
+
+#[cfg(test)]
+mod test_inspector;
+
+#[cfg(test)]
+mod test_auto_renewal;

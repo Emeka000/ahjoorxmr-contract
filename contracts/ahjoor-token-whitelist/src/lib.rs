@@ -175,6 +175,23 @@ impl TokenWhitelistContract {
     /// Check if a token is allowed (public view function)
     /// Returns false during active suspension; lazily clears and reinstates after expiry
     pub fn is_token_allowed(env: Env, token: Address) -> bool {
+        // #297: Lazy suspension check
+        let susp_key = DataKey::TokenSuspension(token.clone());
+        if let Some(suspension) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, TokenSuspension>(&susp_key)
+        {
+            if env.ledger().sequence() < suspension.expiry_ledger {
+                // Still suspended
+                return false;
+            } else {
+                // Expired — lazy reinstatement: clear suspension record
+                env.storage().persistent().remove(&susp_key);
+                events::emit_token_auto_reinstated(&env, token.clone(), env.ledger().sequence());
+            }
+        }
+
         let whitelist: Vec<Address> = env
             .storage()
             .persistent()
@@ -500,3 +517,6 @@ impl TokenWhitelistContract {
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod test_suspension;

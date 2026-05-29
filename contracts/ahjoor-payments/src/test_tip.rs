@@ -174,7 +174,7 @@ fn test_tip_forwarded_to_merchant() {
 
 #[test]
 fn test_tip_is_fee_exempt() {
-    // Create contract with 10% protocol fee and verify tip doesn't have fee taken.
+    // Create contract with max allowed protocol fee (5%) and verify tip doesn't have fee taken.
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register(AhjoorPaymentsContract, ());
@@ -187,8 +187,8 @@ fn test_tip_is_fee_exempt() {
     let token_admin = TokenAdminClient::new(&env, &token_addr);
     let token_client = TokenClient::new(&env, &token_addr);
 
-    // 10% protocol fee
-    client.initialize(&admin, &fee_recipient, &1_000);
+    // 5% protocol fee (maximum allowed by contract)
+    client.initialize(&admin, &fee_recipient, &500);
 
     let customer = Address::generate(&env);
     let merchant = Address::generate(&env);
@@ -210,10 +210,10 @@ fn test_tip_is_fee_exempt() {
     let after = token_client.balance(&merchant);
     let after_fee = token_client.balance(&fee_recipient);
 
-    // Base: 1000 - 10% fee (100) = 900 net to merchant
+    // Base: 1000 - 5% fee (50) = 950 net to merchant
     // Tip: 100 (fee-exempt, goes directly to merchant)
-    assert_eq!(after - before, 1_000); // 900 base net + 100 tip
-    assert_eq!(after_fee - before_fee, 100); // fee only on base
+    assert_eq!(after - before, 1_050); // 950 base net + 100 tip
+    assert_eq!(after_fee - before_fee, 50); // fee only on base
 }
 
 // ---------------------------------------------------------------------------

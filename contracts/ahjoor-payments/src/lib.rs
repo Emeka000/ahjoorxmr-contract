@@ -6,6 +6,11 @@ use soroban_sdk::{
 };
 use ahjoor_token_whitelist::TokenWhitelistClient;
 
+pub mod multi_token_invoice;
+pub mod multi_token_invoice_impl;
+pub mod pre_approved_spending;
+pub mod pre_approved_spending_impl;
+
 /// Maximum length (bytes) for the optional payment reference string.
 const MAX_REFERENCE_LEN: u32 = 64;
 /// Maximum number of entries in the optional metadata map.
@@ -119,6 +124,8 @@ pub enum Error {
     DynamicPaymentExpired = 17,
     /// Customer cumulative spend would exceed the merchant-configured cap (#235)
     CustomerSpendLimitExceeded = 23,
+    /// Capture attempted after the authorized capture deadline ledger.
+    CapturePastDeadline = 24,
     /// Tip supplied on a payment that does not have tipping_enabled (#265)
     TippingNotEnabled = 18,
     /// Tip amount exceeds the admin-configured maximum tip bps of the base amount (#265)
@@ -283,7 +290,7 @@ pub struct Payment {
     pub category: Option<Symbol>,
     /// Optional tags (max 3) immutable after creation (#122)
     pub tags: Option<Vec<Symbol>>,
-    /// Ledger timestamp after which an authorized payment can no longer be captured. 0 = not authorized.
+    /// Ledger sequence after which an authorized payment can no longer be captured. 0 = not authorized.
     pub capture_deadline: u64,
     // Optional oracle price condition required for completion (#125)
     // pub release_condition: Option<OracleCondition>,
@@ -3032,7 +3039,12 @@ impl AhjoorPaymentsContract {
                 }
                 now >= payment.expires_at
             }
-            PaymentStatus::Authorized => now >= payment.capture_deadline,
+            PaymentStatus::Authorized => {
+                if payment.capture_deadline == 0 {
+                    panic!("Authorized payment has no capture deadline");
+                }
+                (env.ledger().sequence() as u64) > payment.capture_deadline
+            }
             _ => false,
         };
 
@@ -3974,6 +3986,7 @@ impl AhjoorPaymentsContract {
         }
 
         let now = env.ledger().timestamp();
+        let now_ledger = env.ledger().sequence() as u64;
 
         // Pass 1: validate all — any failure reverts the entire batch atomically
         for payment_id in payment_ids.iter() {
@@ -3989,13 +4002,15 @@ impl AhjoorPaymentsContract {
             {
                 panic!("Payment is not in Pending, Disputed, or Authorized status");
             }
-            let deadline = if payment.status == PaymentStatus::Authorized {
-                payment.capture_deadline
+            if payment.status == PaymentStatus::Authorized {
+                if payment.capture_deadline == 0 || now_ledger <= payment.capture_deadline {
+                    panic!("Payment has not expired yet");
+                }
             } else {
-                payment.expires_at
-            };
-            if deadline == 0 || now < deadline {
-                panic!("Payment has not expired yet");
+                let deadline = payment.expires_at;
+                if deadline == 0 || now < deadline {
+                    panic!("Payment has not expired yet");
+                }
             }
         }
 
@@ -4435,37 +4450,59 @@ impl AhjoorPaymentsContract {
         Self::finalize_payment(env, payment_id, &mut payment);
     }
 
-    /// Merchant authorizes a pending payment, converting it to Authorized status.
-    /// Funds remain in escrow. The payment must be captured before capture_deadline.
+    /// Merchant authorizes a payment by placing customer funds into escrow immediately.
+    /// The payment starts in Authorized status and must be captured on or before
+    /// `capture_deadline_ledger`.
     pub fn authorize_payment(
         env: Env,
         merchant: Address,
-        payment_id: u32,
-        capture_window_seconds: u64,
-    ) {
+        customer: Address,
+        token: Address,
+        amount: i128,
+        capture_deadline_ledger: u64,
+    ) -> u32 {
         Self::require_not_paused(&env);
         merchant.require_auth();
 
-        let mut payment: Payment = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Payment(payment_id))
-            .expect("Payment not found");
-
-        if payment.merchant != merchant {
-            panic!("Only the payment merchant can authorize");
+        if amount <= 0 {
+            panic!("Payment amount must be positive");
         }
-        if payment.status != PaymentStatus::Pending {
-            panic!("Only pending payments can be authorized");
-        }
-        if capture_window_seconds == 0 {
-            panic!("capture_window_seconds must be positive");
+        if capture_deadline_ledger <= (env.ledger().sequence() as u64) {
+            panic!("capture_deadline_ledger must be in the future");
         }
 
-        let now = env.ledger().timestamp();
-        let old_status = payment.status;
-        payment.status = PaymentStatus::Authorized;
-        payment.capture_deadline = now + capture_window_seconds;
+        Self::require_token_allowed(&env, &token);
+        Self::require_merchant_approved(&env, &merchant);
+
+        let client = token::Client::new(&env, &token);
+        client.transfer_from(
+            &env.current_contract_address(),
+            &customer,
+            &env.current_contract_address(),
+            &amount,
+        );
+
+        let payment_id = Self::next_payment_id(&env);
+        let payment = Payment {
+            id: payment_id,
+            customer: customer.clone(),
+            merchant: merchant.clone(),
+            amount,
+            token: token.clone(),
+            status: PaymentStatus::Authorized,
+            created_at: env.ledger().timestamp(),
+            expires_at: 0,
+            refunded_amount: 0,
+            reference: None,
+            metadata: None,
+            split_recipients: None,
+            execute_after: 0,
+            category: None,
+            tags: None,
+            capture_deadline: capture_deadline_ledger,
+            external_id: None,
+            tipping_enabled: false,
+        };
 
         env.storage()
             .persistent()
@@ -4476,17 +4513,24 @@ impl AhjoorPaymentsContract {
             PERSISTENT_BUMP_AMOUNT,
         );
 
-        events::emit_payment_authorized(&env, payment_id, payment.capture_deadline);
-        events::emit_payment_status_changed(
+        Self::add_customer_payment(&env, &customer, payment_id);
+        Self::inc_global_created(&env);
+        Self::inc_merchant_created(&env, &merchant);
+
+        events::emit_payment_authorized(
             &env,
             payment_id,
-            old_status,
-            PaymentStatus::Authorized,
+            customer,
+            merchant,
+            amount,
+            capture_deadline_ledger,
         );
 
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        payment_id
     }
 
     /// Merchant captures an authorized payment, completing it and releasing funds.
@@ -4507,12 +4551,67 @@ impl AhjoorPaymentsContract {
         if payment.status != PaymentStatus::Authorized {
             panic!("Payment is not authorized");
         }
-        if env.ledger().timestamp() >= payment.capture_deadline {
-            panic!("Capture window has expired");
+        if payment.capture_deadline == 0 {
+            panic!("Authorized payment has no capture deadline");
+        }
+        if (env.ledger().sequence() as u64) > payment.capture_deadline {
+            panic_with_error!(&env, Error::CapturePastDeadline);
         }
 
+        let captured_amount = payment.amount;
         Self::finalize_payment(&env, payment_id, &mut payment);
-        events::emit_payment_captured(&env, payment_id);
+        events::emit_payment_captured(&env, payment_id, captured_amount);
+    }
+
+    /// Customer voids an authorized payment before capture, releasing escrow back
+    /// to the customer and expiring the authorization.
+    pub fn void_authorization(env: Env, customer: Address, payment_id: u32) {
+        Self::require_not_paused(&env);
+        customer.require_auth();
+
+        let mut payment: Payment = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Payment(payment_id))
+            .expect("Payment not found");
+
+        if payment.customer != customer {
+            panic!("Only the payment customer can void authorization");
+        }
+        if payment.status != PaymentStatus::Authorized {
+            panic!("Only authorized payments can be voided");
+        }
+
+        let refund_amount = payment.amount - payment.refunded_amount;
+        if refund_amount > 0 {
+            let client = token::Client::new(&env, &payment.token);
+            client.transfer(&env.current_contract_address(), &payment.customer, &refund_amount);
+        }
+
+        let old_status = payment.status;
+        payment.status = PaymentStatus::Expired;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Payment(payment_id), &payment);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Payment(payment_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        Self::inc_global_expired(&env);
+        events::emit_payment_expired(
+            &env,
+            payment_id,
+            payment.customer.clone(),
+            refund_amount,
+            env.ledger().timestamp(),
+        );
+        events::emit_payment_status_changed(&env, payment_id, old_status, PaymentStatus::Expired);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Execute a token swap via the configured DEX router.

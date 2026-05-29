@@ -621,6 +621,60 @@ pub fn emit_escrow_auto_renewed(
     .publish(e);
 }
 
+// --- Auto-Renewal Clause Events (recurring service agreements) ---
+
+/// Event: Escrow auto-renewed with renewal index tracking.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct EscrowAutoRenewedV2 {
+    pub original_escrow_id: u32,
+    pub new_escrow_id: u32,
+    pub renewal_index: u32,
+}
+
+/// Event: Auto-renewal failed (e.g. insufficient buyer allowance).
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct RenewalFailed {
+    pub escrow_id: u32,
+    pub renewal_index: u32,
+    pub reason: String,
+}
+
+/// Event: Buyer cancelled future auto-renewals for an escrow.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AutoRenewalCancelled {
+    pub escrow_id: u32,
+}
+
+pub fn emit_escrow_auto_renewed_v2(
+    e: &Env,
+    original_escrow_id: u32,
+    new_escrow_id: u32,
+    renewal_index: u32,
+) {
+    EscrowAutoRenewedV2 {
+        original_escrow_id,
+        new_escrow_id,
+        renewal_index,
+    }
+    .publish(e);
+}
+
+pub fn emit_renewal_failed(e: &Env, escrow_id: u32, renewal_index: u32, reason: String) {
+    RenewalFailed {
+        escrow_id,
+        renewal_index,
+        reason,
+    }
+    .publish(e);
+}
+
+pub fn emit_auto_renewal_cancelled(e: &Env, escrow_id: u32) {
+    AutoRenewalCancelled { escrow_id }.publish(e);
+}
+
 pub fn emit_buyer_role_transferred(
     e: &Env,
     escrow_id: u32,
@@ -976,6 +1030,109 @@ pub fn emit_multi_seller_escrow_created(
     MultiSellerEscrowCreated {
         escrow_id,
         sellers_count: sellers.len(),
+    }
+    .publish(e);
+}
+
+// --- Mutual Amendment Protocol Events ---
+
+/// Event: Amendment proposed by buyer or seller
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AmendmentProposed {
+    pub escrow_id: u32,
+    pub nonce: u32,
+    pub proposer: Address,
+    pub expires_at: u64,
+}
+
+/// Event: Amendment signed by a party
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AmendmentSigned {
+    pub escrow_id: u32,
+    pub nonce: u32,
+    pub signer: Address,
+}
+
+/// Event: Amendment applied after both parties signed
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AmendmentApplied {
+    pub escrow_id: u32,
+    pub nonce: u32,
+    pub old_amount: i128,
+    pub new_amount: i128,
+    pub old_deadline: u64,
+    pub new_deadline: u64,
+}
+
+/// Event: Amendment proposal cancelled
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AmendmentCancelled {
+    pub escrow_id: u32,
+    pub nonce: u32,
+    pub cancelled_by: Address,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn emit_amendment_proposed(
+    e: &Env,
+    escrow_id: u32,
+    nonce: u32,
+    proposer: Address,
+    _new_amount: Option<i128>,
+    _new_deadline: Option<u64>,
+    _new_metadata_hash: Option<BytesN<32>>,
+    expires_at: u64,
+) {
+    AmendmentProposed {
+        escrow_id,
+        nonce,
+        proposer,
+        expires_at,
+    }
+    .publish(e);
+}
+
+pub fn emit_amendment_signed(e: &Env, escrow_id: u32, nonce: u32, signer: Address) {
+    AmendmentSigned {
+        escrow_id,
+        nonce,
+        signer,
+    }
+    .publish(e);
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn emit_amendment_applied(
+    e: &Env,
+    escrow_id: u32,
+    nonce: u32,
+    old_amount: i128,
+    new_amount: i128,
+    old_deadline: u64,
+    new_deadline: u64,
+    _old_metadata_hash: Option<BytesN<32>>,
+    _new_metadata_hash: Option<BytesN<32>>,
+) {
+    AmendmentApplied {
+        escrow_id,
+        nonce,
+        old_amount,
+        new_amount,
+        old_deadline,
+        new_deadline,
+    }
+    .publish(e);
+}
+
+pub fn emit_amendment_cancelled(e: &Env, escrow_id: u32, nonce: u32, cancelled_by: Address) {
+    AmendmentCancelled {
+        escrow_id,
+        nonce,
+        cancelled_by,
     }
     .publish(e);
 }

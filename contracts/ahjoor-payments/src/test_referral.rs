@@ -70,7 +70,7 @@ fn test_window_expiry_stops_accrual() {
     client.approve_merchant(&referred);
 
     // Advance ledger past window
-    env.ledger().with_mut(|l| l.sequence += 100);
+    env.ledger().with_mut(|l| l.sequence_number += 100);
 
     tac.mint(&customer, &10_000);
     let pid = client.create_payment(&customer, &referred, &1000, &token_addr, &None, &None, &None);
@@ -111,7 +111,7 @@ fn test_claim_commission() {
     // Claim — will transfer from contract to referrer
     // Contract must hold the tokens; in real flow fee goes to fee_recipient not contract
     // For test purposes, mint to contract address
-    tac.mint(&env.current_contract_address(), &before);
+    tac.mint(&client.address, &before);
     client.claim_referral_commission(&referrer, &token_addr);
     assert_eq!(client.get_pending_commission(&referrer), 0);
 }

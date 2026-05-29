@@ -122,7 +122,10 @@ pub struct PaymentExpired {
 #[derive(Clone, Debug)]
 pub struct PaymentAuthorized {
     pub payment_id: u32,
-    pub capture_deadline: u64,
+    pub customer: Address,
+    pub merchant: Address,
+    pub amount: i128,
+    pub capture_deadline_ledger: u64,
 }
 
 /// Event: Payment created with a merchant-defined expiry override (#130)
@@ -138,6 +141,7 @@ pub struct PaymentExpiryOverride {
 #[derive(Clone, Debug)]
 pub struct PaymentCaptured {
     pub payment_id: u32,
+    pub amount: i128,
 }
 
 /// Event: Partial refund issued on a pending/disputed payment
@@ -399,10 +403,20 @@ pub fn emit_payment_expired(
     .publish(e);
 }
 
-pub fn emit_payment_authorized(e: &Env, payment_id: u32, capture_deadline: u64) {
+pub fn emit_payment_authorized(
+    e: &Env,
+    payment_id: u32,
+    customer: Address,
+    merchant: Address,
+    amount: i128,
+    capture_deadline_ledger: u64,
+) {
     PaymentAuthorized {
         payment_id,
-        capture_deadline,
+        customer,
+        merchant,
+        amount,
+        capture_deadline_ledger,
     }
     .publish(e);
 }
@@ -415,8 +429,8 @@ pub fn emit_payment_expiry_override(e: &Env, payment_id: u32, expiry_seconds: u6
     .publish(e);
 }
 
-pub fn emit_payment_captured(e: &Env, payment_id: u32) {
-    PaymentCaptured { payment_id }.publish(e);
+pub fn emit_payment_captured(e: &Env, payment_id: u32, amount: i128) {
+    PaymentCaptured { payment_id, amount }.publish(e);
 }
 
 pub fn emit_payment_partial_refund(
