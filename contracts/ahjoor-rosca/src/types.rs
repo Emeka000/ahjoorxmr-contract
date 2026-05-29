@@ -58,6 +58,8 @@ pub struct RoscaConfig {
     /// Number of ledger timestamps (seconds) the bidding window stays open.
     /// Ignored when auction_enabled = false.
     pub auction_window_ledgers: u64,
+    /// Enable verifiable on-chain payout order randomization (#315)
+    pub randomize_payout_order: bool,
     /// Enable emergency reserve for this group (#313)
     pub reserve_enabled: bool,
     /// Surcharge percentage (bps) on each contribution routed to emergency reserve (#313)
@@ -287,6 +289,10 @@ pub enum DataKey2 {
     // #240: Co-Signer Guarantee
     CoSigners,               // Map<Address, CoSignerRecord> — member → co-signer record
     CoSignerWindowLedgers,   // u32 — grace period ledgers before penalty applied
+    // #315: Payout Order Randomization
+    RandomizePayoutOrder,    // bool — enable randomization for this group
+    PayoutOrderSeed,         // BytesN<32> — seed for Fisher-Yates shuffle
+    PayoutOrderFinalized,    // bool — track if order has been finalized
 }
 
 /// Overflow key enum — DataKey2 is capped at 50 variants by the soroban XDR limit.

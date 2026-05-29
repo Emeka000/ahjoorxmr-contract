@@ -371,6 +371,22 @@ pub struct PaymentRequest {
     pub metadata: Option<Map<String, String>>,
 }
 
+/// Consent record for zero-amount agreement signing (#307)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsentRecord {
+    pub id: u32,
+    pub merchant: Address,
+    pub customer: Address,
+    pub terms_hash: BytesN<32>,
+    pub terms_version: String,
+    pub created_at: u64,
+    pub expires_at: u64,
+    pub is_signed: bool,
+    pub signed_at: u64,
+    pub is_revoked: bool,
+}
+
 /// Global protocol-wide aggregate statistics (#70).
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -741,6 +757,12 @@ pub enum DataKey2 {
     RecurringInvoice(u32),
     /// #265: maximum tip as basis points of the base payment amount (instance storage)
     MaxTipBps,
+    /// #307: consent record counter
+    ConsentRecordCounter,
+    /// #307: consent record storage
+    ConsentRecord(u32),
+    /// #307: index (merchant, customer, terms_version) → consent_id
+    ConsentIndex(Address, Address, String),
     /// Instance: evidence submission window in ledgers (#308)
     EvidenceWindowLedgers,
     /// Instance: maximum evidence submissions per party (#308)
@@ -7447,6 +7469,67 @@ impl AhjoorPaymentsContract {
             .unwrap_or(DEFAULT_MAX_TIP_BPS)
     }
 
+    // =========================================================================
+    // Consent Records (#307): Zero-Amount Agreement Signing
+    // =========================================================================
+
+    /// Create a consent record for a customer to sign terms without token transfer.
+    /// Merchant calls this to create a record keyed by (merchant, customer, terms_version).
+    /// Returns the consent_id.
+    pub fn create_consent_record(
+        env: Env,
+        merchant: Address,
+        customer: Address,
+        terms_hash: BytesN<32>,
+        terms_version: String,
+        expiry_ledger: u64,
+    ) -> u32 {
+        merchant.require_auth();
+        Self::require_not_paused(&env);
+
+        // Validate inputs
+        if terms_version.len() == 0 || terms_version.len() > 64 {
+            panic!("terms_version must be 1-64 bytes");
+        }
+        if expiry_ledger <= env.ledger().sequence() as u64 {
+            panic!("expiry_ledger must be in the future");
+        }
+
+        // Get next consent ID
+        let consent_id = Self::next_consent_id(&env);
+
+        // Create consent record
+        let now = env.ledger().timestamp();
+        let consent = ConsentRecord {
+            id: consent_id,
+            merchant: merchant.clone(),
+            customer: customer.clone(),
+            terms_hash,
+            terms_version: terms_version.clone(),
+            created_at: now,
+            expires_at: expiry_ledger,
+            is_signed: false,
+            signed_at: 0,
+            is_revoked: false,
+        };
+
+        // Store consent record
+        env.storage()
+            .persistent()
+            .set(&DataKey2::ConsentRecord(consent_id), &consent);
+
+        // Index by (merchant, customer, terms_version)
+        env.storage().persistent().set(
+            &DataKey2::ConsentIndex(merchant.clone(), customer.clone(), terms_version),
+            &consent_id,
+        );
+
+        // Extend TTL
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey2::ConsentRecord(consent_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::ConsentIndex(merchant.clone(), customer.clone(), terms_version.clone()),
     // ── #329: Failed Auto-Debit Retry Queue ───────────────────────────────────
 
     /// Admin configures the retry back-off schedule.
@@ -7547,6 +7630,169 @@ impl AhjoorPaymentsContract {
             PERSISTENT_BUMP_AMOUNT,
         );
 
+        // Emit event
+        events::emit_consent_record_created(&env, consent_id, merchant, customer, terms_hash, terms_version);
+
+        consent_id
+    }
+
+    /// Customer signs a consent record, authenticating their acceptance.
+    /// No token transfer occurs. Consent record must not be expired or revoked.
+    pub fn sign_consent(env: Env, customer: Address, consent_id: u32) {
+        customer.require_auth();
+        Self::require_not_paused(&env);
+
+        // Load consent record
+        let mut consent: ConsentRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::ConsentRecord(consent_id))
+            .expect("Consent record not found");
+
+        // Validate consent state
+        if consent.is_revoked {
+            panic!("Consent record has been revoked");
+        }
+        if consent.is_signed {
+            panic!("Consent record already signed");
+        }
+        if consent.expires_at <= env.ledger().sequence() as u64 {
+            panic!("Consent record has expired");
+        }
+        if consent.customer != customer {
+            panic!("Only the customer can sign this consent");
+        }
+
+        // Mark as signed
+        consent.is_signed = true;
+        consent.signed_at = env.ledger().timestamp();
+
+        // Store updated consent
+        env.storage()
+            .persistent()
+            .set(&DataKey2::ConsentRecord(consent_id), &consent);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey2::ConsentRecord(consent_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+
+        // Emit event
+        events::emit_consent_signed(&env, consent_id, customer, consent.signed_at);
+    }
+
+    /// Check if a consent record is valid (signed, not expired, not revoked).
+    pub fn is_consent_valid(
+        env: Env,
+        merchant: Address,
+        customer: Address,
+        terms_version: String,
+    ) -> bool {
+        // Try to get consent ID from index
+        let consent_id_opt: Option<u32> = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::ConsentIndex(merchant, customer, terms_version));
+
+        if let Some(consent_id) = consent_id_opt {
+            if let Some(consent) = env
+                .storage()
+                .persistent()
+                .get::<_, ConsentRecord>(&DataKey2::ConsentRecord(consent_id))
+            {
+                // Extend TTL on read
+                env.storage()
+                    .persistent()
+                    .extend_ttl(&DataKey2::ConsentRecord(consent_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+
+                // Check validity: signed, not expired, not revoked
+                return consent.is_signed
+                    && !consent.is_revoked
+                    && consent.expires_at > env.ledger().sequence() as u64;
+            }
+        }
+
+        false
+    }
+
+    /// Revoke a consent record (e.g., on account closure).
+    /// Only the merchant or admin can revoke.
+    pub fn revoke_consent(env: Env, caller: Address, consent_id: u32) {
+        caller.require_auth();
+        Self::require_not_paused(&env);
+
+        // Load consent record
+        let mut consent: ConsentRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::ConsentRecord(consent_id))
+            .expect("Consent record not found");
+
+        // Validate caller is merchant or admin
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if caller != consent.merchant && caller != admin {
+            panic!("Only merchant or admin can revoke consent");
+        }
+
+        // Mark as revoked
+        consent.is_revoked = true;
+
+        // Store updated consent
+        env.storage()
+            .persistent()
+            .set(&DataKey2::ConsentRecord(consent_id), &consent);
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey2::ConsentRecord(consent_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+
+        // Emit event
+        events::emit_consent_revoked(&env, consent_id, caller, env.ledger().timestamp());
+    }
+
+    /// Get a consent record by ID.
+    pub fn get_consent_record(env: Env, consent_id: u32) -> ConsentRecord {
+        let consent: ConsentRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::ConsentRecord(consent_id))
+            .expect("Consent record not found");
+
+        env.storage()
+            .persistent()
+            .extend_ttl(&DataKey2::ConsentRecord(consent_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+
+        consent
+    }
+
+    /// Get consent ID by (merchant, customer, terms_version) triple.
+    pub fn get_consent_id(
+        env: Env,
+        merchant: Address,
+        customer: Address,
+        terms_version: String,
+    ) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey2::ConsentIndex(merchant, customer, terms_version))
+    }
+
+    // Helper: Get next consent ID
+    fn next_consent_id(env: &Env) -> u32 {
+        let counter: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey2::ConsentRecordCounter)
+            .unwrap_or(0);
+        let next_id = counter.checked_add(1).expect("consent ID overflow");
+        env.storage()
+            .instance()
+            .set(&DataKey2::ConsentRecordCounter, &next_id);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        next_id
         if result.is_ok() {
             // Payment succeeded — store as a Succeeded record for auditing
             let rec = FailedDebitRecord {
@@ -7805,6 +8051,9 @@ impl AhjoorPaymentsContract {
 
 #[cfg(test)]
 mod test_tip;
+
+#[cfg(test)]
+mod test_consent;
 
 #[cfg(test)]
 mod test_token_whitelist;

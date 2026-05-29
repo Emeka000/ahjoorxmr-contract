@@ -1,6 +1,35 @@
 use crate::{PaymentStatus, SplitTransfer};
 use soroban_sdk::{contractevent, Address, BytesN, Env, String, Symbol, Vec};
 
+/// Event: Consent record created for zero-amount agreement signing (#307)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ConsentRecordCreated {
+    pub consent_id: u32,
+    pub merchant: Address,
+    pub customer: Address,
+    pub terms_hash: BytesN<32>,
+    pub terms_version: String,
+}
+
+/// Event: Consent record signed by customer (#307)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ConsentSigned {
+    pub consent_id: u32,
+    pub customer: Address,
+    pub signed_at: u64,
+}
+
+/// Event: Consent record revoked (#307)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ConsentRevoked {
+    pub consent_id: u32,
+    pub revoked_by: Address,
+    pub revoked_at: u64,
+}
+
 /// Event: Payment receipt issued on completion (#65)
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -1390,6 +1419,41 @@ pub fn emit_payment_indexed_by_external_id(e: &Env, payment_id: u32, ext_id: sor
     );
 }
 
+// Consent record events (#307)
+pub fn emit_consent_record_created(
+    e: &Env,
+    consent_id: u32,
+    merchant: Address,
+    customer: Address,
+    terms_hash: BytesN<32>,
+    terms_version: String,
+) {
+    ConsentRecordCreated {
+        consent_id,
+        merchant,
+        customer,
+        terms_hash,
+        terms_version,
+    }
+    .publish(e);
+}
+
+pub fn emit_consent_signed(e: &Env, consent_id: u32, customer: Address, signed_at: u64) {
+    ConsentSigned {
+        consent_id,
+        customer,
+        signed_at,
+    }
+    .publish(e);
+}
+
+pub fn emit_consent_revoked(e: &Env, consent_id: u32, revoked_by: Address, revoked_at: u64) {
+    ConsentRevoked {
+        consent_id,
+        revoked_by,
+        revoked_at,
+    }
+    .publish(e);
 // --- Dispute Evidence Events (#308) ---
 
 /// Event: Evidence submitted for a dispute
