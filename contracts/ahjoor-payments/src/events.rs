@@ -173,6 +173,42 @@ pub struct PaymentCaptured {
     pub amount: i128,
 }
 
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct CustomerBlocked {
+    pub merchant: Address,
+    pub customer: Address,
+    pub reason_code: Symbol,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct UnblockRequested {
+    pub request_id: u32,
+    pub merchant: Address,
+    pub customer: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct CustomerUnblocked {
+    pub merchant: Address,
+    pub customer: Address,
+    pub unblocked_by: Address,
+}
+
+pub fn emit_customer_blocked(e: &Env, merchant: Address, customer: Address, reason: Symbol) {
+    CustomerBlocked { merchant, customer, reason }.publish(e);
+}
+
+pub fn emit_unblock_requested(e: &Env, request_id: u32, merchant: Address, customer: Address) {
+    UnblockRequested { request_id, merchant, customer }.publish(e);
+}
+
+pub fn emit_customer_unblocked(e: &Env, merchant: Address, customer: Address, by: Address) {
+    CustomerUnblocked { merchant, customer, unblocked_by: by }.publish(e);
+}
+
 /// Event: Partial refund issued on a pending/disputed payment
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -345,6 +381,40 @@ pub struct PaymentExpiryExtended {
     pub payment_id: u32,
     pub new_expires_at: u64,
     pub extension_count: u32,
+}
+
+/// Event: Installment plan created.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct InstallmentPlanCreated {
+    pub plan_id: u32,
+    pub customer: Address,
+    pub merchant: Address,
+    pub total_amount: i128,
+    pub num_installments: u32,
+}
+
+/// Event: Installment settled.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct InstallmentSettled {
+    pub plan_id: u32,
+    pub installment_index: u32,
+    pub amount_debited: i128,
+}
+
+/// Event: Installment plan completed.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct InstallmentPlanCompleted {
+    pub plan_id: u32,
+}
+
+/// Event: Installment plan expired.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct InstallmentPlanExpired {
+    pub plan_id: u32,
 }
 
 // --- Helper Emission Functions ---

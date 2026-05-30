@@ -75,6 +75,63 @@ pub fn emit_token_whitelisted(e: &Env, token: Address, admin: Address) {
     TokenWhitelisted { token, admin }.publish(e);
 }
 
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TokenMetadataSet {
+    pub token: Address,
+    pub symbol: soroban_sdk::String,
+    pub decimals: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TokenOracleUpdated {
+    pub token: Address,
+    pub old_oracle: Option<Address>,
+    pub new_oracle: Option<Address>,
+}
+
+pub fn emit_token_metadata_set(e: &Env, token: Address, symbol: soroban_sdk::String, decimals: u32) {
+    TokenMetadataSet { token, symbol, decimals }.publish(e);
+}
+
+pub fn emit_token_oracle_updated(e: &Env, token: Address, old_oracle: Option<Address>, new_oracle: Option<Address>) {
+    TokenOracleUpdated { token, old_oracle, new_oracle }.publish(e);
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct RiskTierDefined {
+    pub tier_id: u32,
+    pub name: soroban_sdk::String,
+    pub max_single_tx_amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TokenTierAssigned {
+    pub token: Address,
+    pub tier_id: u32,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TokenLimitOverrideSet {
+    pub token: Address,
+}
+
+pub fn emit_risk_tier_defined(e: &Env, tier_id: u32, name: soroban_sdk::String, max_single_tx_amount: i128) {
+    RiskTierDefined { tier_id, name, max_single_tx_amount }.publish(e);
+}
+
+pub fn emit_token_tier_assigned(e: &Env, token: Address, tier_id: u32) {
+    TokenTierAssigned { token, tier_id }.publish(e);
+}
+
+pub fn emit_token_limit_override_set(e: &Env, token: Address) {
+    TokenLimitOverrideSet { token }.publish(e);
+}
+
 pub fn emit_token_delisted(e: &Env, token: Address, admin: Address) {
     TokenDelisted { token, admin }.publish(e);
 }

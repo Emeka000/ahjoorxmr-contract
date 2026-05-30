@@ -1,0 +1,749 @@
+#![cfg(test)]
+
+use crate::{AhjoorEscrowContract, AhjoorEscrowContractClient, BountyData, EscrowStatus};
+use soroban_sdk::{
+    testutils::{Address as _, Ledger, LedgerInfo},
+    token, Address, BytesN, Env, String,
+};
+
+fn create_token_contract<'a>(e: &Env, admin: &Address) -> token::StellarAssetClient<'a> {
+    token::StellarAssetClient::new(e, &e.register_stellar_asset_contract_v2(admin.clone()).address())
+}
+
+fn advance_ledger(e: &Env, delta_secs: u64) {
+    e.ledger().set(LedgerInfo {
+        timestamp: e.ledger().timestamp().saturating_add(delta_secs),
+        protocol_version: 20,
+        sequence_number: e.ledger().sequence(),
+        network_id: Default::default(),
+        base_reserve: 10,
+        min_temp_entry_ttl: 10,
+        min_persistent_entry_ttl: 10,
+        max_entry_ttl: 3110400,
+    });
+}
+
+#[test]
+fn test_create_bounty_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+    let claim_deadline = current_time + 86400; // 1 day
+    let submission_deadline = current_time + 172800; // 2 days
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &claim_deadline,
+        &submission_deadline,
+    );
+
+    assert_eq!(escrow_id, 1);
+
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.buyer, buyer);
+    assert_eq!(escrow.amount, 500);
+    assert_eq!(escrow.status, EscrowStatus::BountyUnclaimed);
+
+    let bounty_data = client.get_bounty_data(&escrow_id).unwrap();
+    assert_eq!(bounty_data.description_hash, description_hash);
+    assert_eq!(bounty_data.claim_deadline_ledger, claim_deadline);
+    assert_eq!(bounty_data.submission_deadline_ledger, submission_deadline);
+    assert_eq!(bounty_data.solver, None);
+    assert_eq!(bounty_data.rejection_count, 0);
+}
+
+#[test]
+#[should_panic(expected = "Bounty amount must be positive")]
+fn test_create_bounty_zero_amount() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    client.create_bounty(
+        &buyer,
+        &token.address,
+        &0,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Claim deadline must be in the future")]
+fn test_create_bounty_past_claim_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time - 100),
+        &(current_time + 172800),
+    );
+}
+
+#[test]
+#[should_panic(expected = "Submission deadline must be after claim deadline")]
+fn test_create_bounty_invalid_deadlines() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 172800),
+        &(current_time + 86400),
+    );
+}
+
+#[test]
+fn test_claim_bounty_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let solver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    client.claim_bounty(&solver, &escrow_id);
+
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.seller, solver);
+    assert_eq!(escrow.status, EscrowStatus::BountyClaimed);
+
+    let bounty_data = client.get_bounty_data(&escrow_id).unwrap();
+    assert_eq!(bounty_data.solver, Some(solver));
+}
+
+#[test]
+#[should_panic(expected = "Bounty is not available for claiming")]
+fn test_claim_bounty_duplicate() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let solver1 = Address::generate(&env);
+    let solver2 = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    client.claim_bounty(&solver1, &escrow_id);
+    client.claim_bounty(&solver2, &escrow_id); // Should panic
+}
+
+#[test]
+#[should_panic(expected = "Claim deadline has passed")]
+fn test_claim_bounty_after_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let solver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    advance_ledger(&env, 86401); // Past claim deadline
+
+    client.claim_bounty(&solver, &escrow_id);
+}
+
+#[test]
+fn test_submit_bounty_work_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let solver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    client.claim_bounty(&solver, &escrow_id);
+
+    let submission_hash = BytesN::from_array(&env, &[2u8; 32]);
+    client.submit_bounty_work(&solver, &escrow_id, &submission_hash);
+
+    let bounty_data = client.get_bounty_data(&escrow_id).unwrap();
+    assert_eq!(bounty_data.submission_hash, Some(submission_hash));
+}
+
+#[test]
+#[should_panic(expected = "Only the assigned solver can submit work")]
+fn test_submit_bounty_work_wrong_solver() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let solver = Address::generate(&env);
+    let wrong_solver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    client.claim_bounty(&solver, &escrow_id);
+
+    let submission_hash = BytesN::from_array(&env, &[2u8; 32]);
+    client.submit_bounty_work(&wrong_solver, &escrow_id, &submission_hash);
+}
+
+#[test]
+#[should_panic(expected = "Submission deadline has passed")]
+fn test_submit_bounty_work_after_deadline() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let solver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    client.claim_bounty(&solver, &escrow_id);
+
+    advance_ledger(&env, 172801); // Past submission deadline
+
+    let submission_hash = BytesN::from_array(&env, &[2u8; 32]);
+    client.submit_bounty_work(&solver, &escrow_id, &submission_hash);
+}
+
+#[test]
+fn test_approve_bounty_submission_success() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let solver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    client.claim_bounty(&solver, &escrow_id);
+
+    let submission_hash = BytesN::from_array(&env, &[2u8; 32]);
+    client.submit_bounty_work(&solver, &escrow_id, &submission_hash);
+
+    let solver_balance_before = token.balance(&solver);
+    client.approve_bounty_submission(&buyer, &escrow_id);
+
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::Released);
+
+    let solver_balance_after = token.balance(&solver);
+    assert_eq!(solver_balance_after - solver_balance_before, 500);
+}
+
+#[test]
+#[should_panic(expected = "No submission has been made")]
+fn test_approve_bounty_without_submission() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let solver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    client.claim_bounty(&solver, &escrow_id);
+    client.approve_bounty_submission(&buyer, &escrow_id);
+}
+
+#[test]
+fn test_reject_bounty_submission_and_reclaim() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let solver1 = Address::generate(&env);
+    let solver2 = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    // First solver claims and submits
+    client.claim_bounty(&solver1, &escrow_id);
+    let submission_hash = BytesN::from_array(&env, &[2u8; 32]);
+    client.submit_bounty_work(&solver1, &escrow_id, &submission_hash);
+
+    // Buyer rejects
+    client.reject_bounty_submission(&buyer, &escrow_id);
+
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::BountyUnclaimed);
+
+    let bounty_data = client.get_bounty_data(&escrow_id).unwrap();
+    assert_eq!(bounty_data.solver, None);
+    assert_eq!(bounty_data.submission_hash, None);
+    assert_eq!(bounty_data.rejection_count, 1);
+
+    // Second solver can now claim
+    client.claim_bounty(&solver2, &escrow_id);
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.seller, solver2);
+    assert_eq!(escrow.status, EscrowStatus::BountyClaimed);
+}
+
+#[test]
+#[should_panic(expected = "Maximum rejection rounds reached")]
+fn test_reject_bounty_max_rejections() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let solver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    // Reject 3 times (default max)
+    for _ in 0..3 {
+        client.claim_bounty(&solver, &escrow_id);
+        let submission_hash = BytesN::from_array(&env, &[2u8; 32]);
+        client.submit_bounty_work(&solver, &escrow_id, &submission_hash);
+        client.reject_bounty_submission(&buyer, &escrow_id);
+    }
+
+    // Fourth rejection should panic
+    client.claim_bounty(&solver, &escrow_id);
+    let submission_hash = BytesN::from_array(&env, &[2u8; 32]);
+    client.submit_bounty_work(&solver, &escrow_id, &submission_hash);
+    client.reject_bounty_submission(&buyer, &escrow_id);
+}
+
+#[test]
+fn test_cancel_bounty_unclaimed() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    let buyer_balance_before = token.balance(&buyer);
+    client.cancel_bounty(&buyer, &escrow_id);
+
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::Refunded);
+
+    let buyer_balance_after = token.balance(&buyer);
+    assert_eq!(buyer_balance_after - buyer_balance_before, 500);
+}
+
+#[test]
+#[should_panic(expected = "Cannot cancel bounty in current state")]
+fn test_cancel_bounty_claimed() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let solver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    client.claim_bounty(&solver, &escrow_id);
+    client.cancel_bounty(&buyer, &escrow_id); // Should panic
+}
+
+#[test]
+fn test_full_bounty_award_flow() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+    let buyer = Address::generate(&env);
+    let solver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    // 1. Create bounty
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::BountyUnclaimed);
+
+    // 2. Solver claims bounty
+    client.claim_bounty(&solver, &escrow_id);
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::BountyClaimed);
+    assert_eq!(escrow.seller, solver);
+
+    // 3. Solver submits work
+    let submission_hash = BytesN::from_array(&env, &[2u8; 32]);
+    client.submit_bounty_work(&solver, &escrow_id, &submission_hash);
+
+    let bounty_data = client.get_bounty_data(&escrow_id).unwrap();
+    assert_eq!(bounty_data.submission_hash, Some(submission_hash));
+
+    // 4. Buyer approves and funds are released
+    let solver_balance_before = token.balance(&solver);
+    client.approve_bounty_submission(&buyer, &escrow_id);
+
+    let escrow = client.get_escrow(&escrow_id);
+    assert_eq!(escrow.status, EscrowStatus::Released);
+
+    let solver_balance_after = token.balance(&solver);
+    assert_eq!(solver_balance_after - solver_balance_before, 500);
+}
+
+#[test]
+fn test_set_max_bounty_rejection_rounds() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let admin = Address::generate(&env);
+
+    let contract_id = env.register_contract(None, AhjoorEscrowContract);
+    let client = AhjoorEscrowContractClient::new(&env, &contract_id);
+
+    client.initialize(&admin);
+
+    // Set max rejection rounds to 5
+    client.set_max_bounty_rejection_rounds(&admin, &5);
+
+    // Verify by creating a bounty and rejecting it 5 times
+    let buyer = Address::generate(&env);
+    let solver = Address::generate(&env);
+    let token_admin = Address::generate(&env);
+
+    let token = create_token_contract(&env, &token_admin);
+    token.mint(&buyer, &1000);
+
+    let description_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let current_time = env.ledger().timestamp();
+
+    let escrow_id = client.create_bounty(
+        &buyer,
+        &token.address,
+        &500,
+        &description_hash,
+        &(current_time + 86400),
+        &(current_time + 172800),
+    );
+
+    // Should be able to reject 5 times
+    for i in 0..5 {
+        client.claim_bounty(&solver, &escrow_id);
+        let submission_hash = BytesN::from_array(&env, &[2u8; 32]);
+        client.submit_bounty_work(&solver, &escrow_id, &submission_hash);
+        client.reject_bounty_submission(&buyer, &escrow_id);
+
+        let bounty_data = client.get_bounty_data(&escrow_id).unwrap();
+        assert_eq!(bounty_data.rejection_count, i + 1);
+    }
+}

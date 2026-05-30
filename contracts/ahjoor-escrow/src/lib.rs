@@ -41,6 +41,10 @@ pub enum EscrowStatus {
     InspectionPassed = 12,
     /// #272: Inspector rejected; buyer/seller may negotiate or dispute.
     InspectionFailed = 13,
+    /// #319: Bounty created but not yet claimed by any solver.
+    BountyUnclaimed = 14,
+    /// #319: Bounty claimed by a solver; awaiting submission.
+    BountyClaimed = 15,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,6 +125,14 @@ pub struct Escrow {
     pub extensions: EscrowExtensions,
     pub top_up_history: Vec<TopUpEntry>,
     pub top_up_acknowledged: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EscrowReceipt {
+    pub receipt_id: u32,
+    pub escrow_id: u32,
+    pub holder: Address,
 }
 
 #[contracttype]
@@ -280,11 +292,17 @@ pub struct EscrowBatchConfig {
 pub enum DataKey {
     Admin,
     ContractVersion,
+    /// Counter for receipt IDs
+    EscrowReceiptCounter,
     MigrationCompleted(u32),
     Paused,
     PauseReason,
     EscrowCounter,
     Escrow(u32),
+    /// receipt_id -> EscrowReceipt
+    EscrowReceipt(u32),
+    /// escrow_id -> receipt_id
+    EscrowReceiptByEscrow(u32),
     Dispute(u32),
     DeadlineProposal(u32),
     AllowedToken(Address),
@@ -393,6 +411,10 @@ pub enum DataKey2 {
 pub enum DataKey2 {
     /// #332: BPS-based milestone states for proportional progressive release
     EscrowMilestonesV2(u32),
+    /// #319: Bounty metadata per escrow
+    BountyData(u32),
+    /// #319: Admin-configurable max rejection rounds for bounties
+    MaxBountyRejectionRounds,
 }
 
 // ── #332: Milestone BPS Progressive Release ───────────────────────────────────
@@ -432,6 +454,27 @@ const MAX_ARBITER_FEE_BPS: u32 = 1_000; // 10%
 const DEFAULT_RESOLUTION_COOLING_OFF_SECONDS: u64 = 24 * 60 * 60; // 24 hours
 const DEFAULT_SELLER_TRANSFER_VETO_WINDOW: u32 = 100; // ledgers
 const DEFAULT_AMENDMENT_EXPIRY_SECONDS: u64 = 7 * 24 * 60 * 60; // 7 days
+const DEFAULT_MAX_BOUNTY_REJECTION_ROUNDS: u32 = 3; // #319: max times a bounty can be rejected and re-opened
+
+// ── #319: Bounty Board for Open Competitive Work Assignment ──────────────────
+
+/// Bounty metadata for open competitive work assignment.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BountyData {
+    /// Hash of the bounty description/requirements.
+    pub description_hash: BytesN<32>,
+    /// Ledger timestamp deadline for claiming the bounty.
+    pub claim_deadline_ledger: u64,
+    /// Ledger timestamp deadline for submitting work after claiming.
+    pub submission_deadline_ledger: u64,
+    /// Address of the solver who claimed the bounty (None if unclaimed).
+    pub solver: Option<Address>,
+    /// Hash of the submitted work (None if not yet submitted).
+    pub submission_hash: Option<BytesN<32>>,
+    /// Number of times this bounty has been rejected and re-opened.
+    pub rejection_count: u32,
+}
 
 /// Auto-renewal configuration for recurring service agreements.
 /// When provided at escrow creation, the escrow will automatically re-fund
@@ -551,6 +594,7 @@ impl AhjoorEscrowContract {
             .set(&DataKey::DefaultDisputeWinner, &DisputeDefaultWinner::Buyer);
         env.storage().instance().set(&DataKey::MaxTopupMultiplier, &DEFAULT_MAX_TOPUP_MULTIPLIER);
         env.storage().instance().set(&DataKey::PartialReleaseResponseDeadline, &DEFAULT_PARTIAL_RELEASE_RESPONSE_DEADLINE);
+        env.storage().instance().set(&DataKey2::MaxBountyRejectionRounds, &DEFAULT_MAX_BOUNTY_REJECTION_ROUNDS);
 
         env.storage()
             .instance()
@@ -1093,6 +1137,26 @@ impl AhjoorEscrowContract {
             events::emit_escrow_time_locked(env, escrow_id, lock_until);
         }
 
+        // Mint EscrowReceipt assigned to primary seller
+        let receipt_id = Self::next_receipt_id(env);
+        let receipt = EscrowReceipt {
+            receipt_id,
+            escrow_id,
+            holder: primary_seller.clone(),
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::EscrowReceipt(receipt_id), &receipt);
+        env.storage()
+            .persistent()
+            .set(&DataKey::EscrowReceiptByEscrow(escrow_id), &receipt_id);
+        env.storage().persistent().extend_ttl(
+            &DataKey::EscrowReceipt(receipt_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+        events::emit_escrow_receipt_minted(env, receipt_id, escrow_id, primary_seller);
+
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -1154,6 +1218,48 @@ impl AhjoorEscrowContract {
         escrow_id
     }
 
+    /// Transfer an escrow receipt to a new holder. Only current holder may transfer.
+    pub fn transfer_escrow_receipt(env: Env, caller: Address, receipt_id: u32, new_holder: Address) {
+        Self::require_not_paused(&env);
+        caller.require_auth();
+
+        let mut receipt: EscrowReceipt = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EscrowReceipt(receipt_id))
+            .expect("Receipt not found");
+
+        if caller != receipt.holder {
+            panic!("Only current holder can transfer receipt");
+        }
+
+        // Block transfers for milestone escrows or pending partial releases
+        if env.storage().persistent().has(&DataKey::EscrowMilestones(receipt.escrow_id)) {
+            panic!("ActiveMilestoneInProgress");
+        }
+        if env.storage().persistent().has(&DataKey::PendingPartialRelease(receipt.escrow_id)) {
+            panic!("ActiveMilestoneInProgress");
+        }
+
+        let old = receipt.holder.clone();
+        receipt.holder = new_holder.clone();
+        env.storage().persistent().set(&DataKey::EscrowReceipt(receipt_id), &receipt);
+        env.storage().persistent().extend_ttl(
+            &DataKey::EscrowReceipt(receipt_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+        events::emit_escrow_receipt_transferred(&env, receipt_id, old, new_holder);
+    }
+
+    /// Read the escrow receipt for an escrow, if any.
+    pub fn get_escrow_receipt(env: Env, escrow_id: u32) -> Option<EscrowReceipt> {
+        if let Some(receipt_id) = env.storage().persistent().get::<_, u32>(&DataKey::EscrowReceiptByEscrow(escrow_id)) {
+            return env.storage().persistent().get(&DataKey::EscrowReceipt(receipt_id));
+        }
+        None
+    }
+
     /// Release escrowed funds to seller. Can be called by buyer or arbiter.
     pub fn release_escrow(env: Env, caller: Address, escrow_id: u32) {
         Self::require_not_paused(&env);
@@ -1207,6 +1313,9 @@ impl AhjoorEscrowContract {
         }
 
         escrow.status = EscrowStatus::Released;
+
+        // Burn associated receipt atomically on release
+        Self::burn_receipt_if_exists(&env, escrow_id);
 
         env.storage()
             .persistent()
@@ -1797,7 +1906,8 @@ impl AhjoorEscrowContract {
         }
 
         let client = token::Client::new(&env, &escrow.token);
-        client.transfer(&env.current_contract_address(), &escrow.seller, &milestone.amount);
+        let recipient = Self::get_receipt_holder(&env, escrow_id).unwrap_or(escrow.seller.clone());
+        client.transfer(&env.current_contract_address(), &recipient, &milestone.amount);
 
         let amount_released = milestone.amount;
         milestone.status = MilestoneStatus::Approved;
@@ -1826,6 +1936,8 @@ impl AhjoorEscrowContract {
         }
         if all_terminal && any_approved && escrow.status == EscrowStatus::Active {
             escrow.status = EscrowStatus::Released;
+            // Burn receipt when milestones complete and escrow releases
+            Self::burn_receipt_if_exists(&env, escrow_id);
             env.storage()
                 .persistent()
                 .set(&DataKey::Escrow(escrow_id), &escrow);
@@ -2543,6 +2655,9 @@ impl AhjoorEscrowContract {
             escrow.status = EscrowStatus::Refunded;
         }
 
+        // Burn any receipt in either case
+        Self::burn_receipt_if_exists(&env, escrow_id);
+
         env.storage()
             .persistent()
             .set(&DataKey::Escrow(escrow_id), &escrow);
@@ -2956,6 +3071,8 @@ impl AhjoorEscrowContract {
         );
 
         escrow.status = EscrowStatus::Refunded;
+        // Burn associated receipt on refund
+        Self::burn_receipt_if_exists(&env, escrow_id);
 
         env.storage()
             .persistent()
@@ -4574,6 +4691,8 @@ impl AhjoorEscrowContract {
         }
 
         escrow.status = EscrowStatus::Refunded;
+        // Burn any associated receipt on cancellation accepted
+        Self::burn_receipt_if_exists(&env, escrow_id);
         env.storage()
             .persistent()
             .set(&DataKey::Escrow(escrow_id), &escrow);
@@ -4684,6 +4803,464 @@ impl AhjoorEscrowContract {
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
+    // ── #319: Bounty Board for Open Competitive Work Assignment ──────────────
+
+    /// Create a bounty escrow with no pre-assigned seller.
+    /// Any whitelisted solver can claim it first-come-first-served.
+    pub fn create_bounty(
+        env: Env,
+        buyer: Address,
+        token: Address,
+        amount: i128,
+        description_hash: BytesN<32>,
+        claim_deadline_ledger: u64,
+        submission_deadline_ledger: u64,
+    ) -> u32 {
+        Self::require_not_paused(&env);
+        buyer.require_auth();
+
+        if amount <= 0 {
+            panic!("Bounty amount must be positive");
+        }
+
+        let current_time = env.ledger().timestamp();
+        if claim_deadline_ledger <= current_time {
+            panic!("Claim deadline must be in the future");
+        }
+        if submission_deadline_ledger <= claim_deadline_ledger {
+            panic!("Submission deadline must be after claim deadline");
+        }
+
+        // Check token whitelist if configured
+        if let Some(whitelist_addr) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::TokenWhitelistContract)
+        {
+            let whitelist_client = TokenWhitelistClient::new(&env, &whitelist_addr);
+            if !whitelist_client.is_whitelisted(&token) {
+                panic!("Token not whitelisted");
+            }
+        }
+
+        // Transfer funds from buyer to contract
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&buyer, &env.current_contract_address(), &amount);
+
+        // Create escrow with BountyUnclaimed status
+        let escrow_id = env
+            .storage()
+            .instance()
+            .get(&DataKey::EscrowCounter)
+            .unwrap_or(0u32)
+            + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::EscrowCounter, &escrow_id);
+
+        let escrow = Escrow {
+            id: escrow_id,
+            buyer: buyer.clone(),
+            seller: env.current_contract_address(), // Placeholder until claimed
+            arbiter: env.current_contract_address(), // No arbiter for bounties
+            amount,
+            original_amount: amount,
+            token: token.clone(),
+            status: EscrowStatus::BountyUnclaimed,
+            created_at: current_time,
+            deadline: submission_deadline_ledger,
+            metadata_hash: Some(description_hash.clone()),
+            sellers: Vec::new(&env),
+            extensions: EscrowExtensions {
+                auto_renew: false,
+                renewal_count: 0,
+                renewals_remaining: 0,
+                dispute_timeout_seconds: None,
+                buyer_inactivity_secs: 0,
+                min_lock_until: None,
+                release_base: None,
+                release_quote: None,
+                release_comparison: None,
+                release_threshold_price: None,
+                arbiter_fee_bps: None,
+                dispute_default_winner: None,
+                required_collateral_bps: 0,
+                collateral_forfeit_bps: 0,
+                collateral_deposit_deadline: 0,
+                collateral_amount: 0,
+                delivery_proof_hash: None,
+                inspector: None,
+                auto_renew_config: None,
+                renewals_completed: 0,
+            },
+            top_up_history: Vec::new(&env),
+            top_up_acknowledged: false,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Escrow(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        // Store bounty metadata
+        let bounty_data = BountyData {
+            description_hash: description_hash.clone(),
+            claim_deadline_ledger,
+            submission_deadline_ledger,
+            solver: None,
+            submission_hash: None,
+            rejection_count: 0,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey2::BountyData(escrow_id), &bounty_data);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::BountyData(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_bounty_created(
+            &env,
+            escrow_id,
+            buyer,
+            amount,
+            token,
+            description_hash,
+            claim_deadline_ledger,
+            submission_deadline_ledger,
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        escrow_id
+    }
+
+    /// Claim an unclaimed bounty. First-come-first-served.
+    pub fn claim_bounty(env: Env, solver: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        solver.require_auth();
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if escrow.status != EscrowStatus::BountyUnclaimed {
+            panic!("Bounty is not available for claiming");
+        }
+
+        let mut bounty_data: BountyData = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::BountyData(escrow_id))
+            .expect("Bounty data not found");
+
+        let current_time = env.ledger().timestamp();
+        if current_time > bounty_data.claim_deadline_ledger {
+            panic!("Claim deadline has passed");
+        }
+
+        // Update escrow with solver as seller
+        escrow.seller = solver.clone();
+        escrow.status = EscrowStatus::BountyClaimed;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Escrow(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        // Update bounty data
+        bounty_data.solver = Some(solver.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey2::BountyData(escrow_id), &bounty_data);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::BountyData(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_bounty_claimed(&env, escrow_id, solver);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Submit bounty work by the solver.
+    pub fn submit_bounty_work(
+        env: Env,
+        solver: Address,
+        escrow_id: u32,
+        submission_hash: BytesN<32>,
+    ) {
+        Self::require_not_paused(&env);
+        solver.require_auth();
+
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if escrow.status != EscrowStatus::BountyClaimed {
+            panic!("Bounty is not in claimed status");
+        }
+
+        if escrow.seller != solver {
+            panic!("Only the assigned solver can submit work");
+        }
+
+        let mut bounty_data: BountyData = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::BountyData(escrow_id))
+            .expect("Bounty data not found");
+
+        let current_time = env.ledger().timestamp();
+        if current_time > bounty_data.submission_deadline_ledger {
+            panic!("Submission deadline has passed");
+        }
+
+        // Store submission hash
+        bounty_data.submission_hash = Some(submission_hash.clone());
+        env.storage()
+            .persistent()
+            .set(&DataKey2::BountyData(escrow_id), &bounty_data);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::BountyData(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_bounty_work_submitted(&env, escrow_id, solver, submission_hash);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Approve bounty submission and release funds to solver.
+    pub fn approve_bounty_submission(env: Env, buyer: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        buyer.require_auth();
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if escrow.buyer != buyer {
+            panic!("Only buyer can approve submission");
+        }
+
+        if escrow.status != EscrowStatus::BountyClaimed {
+            panic!("Bounty is not in claimed status");
+        }
+
+        let bounty_data: BountyData = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::BountyData(escrow_id))
+            .expect("Bounty data not found");
+
+        if bounty_data.submission_hash.is_none() {
+            panic!("No submission has been made");
+        }
+
+        let solver = escrow.seller.clone();
+        let amount = escrow.amount;
+        let token_client = token::Client::new(&env, &escrow.token);
+
+        // Release funds to solver
+        token_client.transfer(&env.current_contract_address(), &solver, &amount);
+
+        // Update escrow status
+        escrow.status = EscrowStatus::Released;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Escrow(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_bounty_awarded(&env, escrow_id, solver, amount);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Reject bounty submission and re-open for new claims (up to MAX_REJECTION_ROUNDS).
+    pub fn reject_bounty_submission(env: Env, buyer: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        buyer.require_auth();
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if escrow.buyer != buyer {
+            panic!("Only buyer can reject submission");
+        }
+
+        if escrow.status != EscrowStatus::BountyClaimed {
+            panic!("Bounty is not in claimed status");
+        }
+
+        let mut bounty_data: BountyData = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::BountyData(escrow_id))
+            .expect("Bounty data not found");
+
+        let max_rejections: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey2::MaxBountyRejectionRounds)
+            .unwrap_or(DEFAULT_MAX_BOUNTY_REJECTION_ROUNDS);
+
+        if bounty_data.rejection_count >= max_rejections {
+            panic!("Maximum rejection rounds reached");
+        }
+
+        let rejected_solver = escrow.seller.clone();
+
+        // Reset bounty to unclaimed state
+        escrow.seller = env.current_contract_address();
+        escrow.status = EscrowStatus::BountyUnclaimed;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Escrow(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        // Update bounty data
+        bounty_data.solver = None;
+        bounty_data.submission_hash = None;
+        bounty_data.rejection_count += 1;
+        env.storage()
+            .persistent()
+            .set(&DataKey2::BountyData(escrow_id), &bounty_data);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::BountyData(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_bounty_rejected(&env, escrow_id, rejected_solver, bounty_data.rejection_count);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Cancel bounty and refund buyer (only if unclaimed or after claim deadline).
+    pub fn cancel_bounty(env: Env, buyer: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        buyer.require_auth();
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if escrow.buyer != buyer {
+            panic!("Only buyer can cancel bounty");
+        }
+
+        let bounty_data: BountyData = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::BountyData(escrow_id))
+            .expect("Bounty data not found");
+
+        let current_time = env.ledger().timestamp();
+
+        // Can cancel if unclaimed, or if claim deadline passed and still unclaimed
+        if escrow.status == EscrowStatus::BountyUnclaimed {
+            // Allow cancellation anytime if unclaimed
+        } else if escrow.status == EscrowStatus::BountyClaimed
+            && current_time > bounty_data.claim_deadline_ledger
+        {
+            // Allow cancellation if claim deadline passed (edge case)
+        } else {
+            panic!("Cannot cancel bounty in current state");
+        }
+
+        let amount = escrow.amount;
+        let token_client = token::Client::new(&env, &escrow.token);
+
+        // Refund buyer
+        token_client.transfer(&env.current_contract_address(), &buyer, &amount);
+
+        // Update escrow status
+        escrow.status = EscrowStatus::Refunded;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Escrow(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_bounty_cancelled(&env, escrow_id, buyer, amount);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin function to set max bounty rejection rounds.
+    pub fn set_max_bounty_rejection_rounds(env: Env, admin: Address, max_rounds: u32) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can set max bounty rejection rounds");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey2::MaxBountyRejectionRounds, &max_rounds);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get bounty data for an escrow.
+    pub fn get_bounty_data(env: Env, escrow_id: u32) -> Option<BountyData> {
+        env.storage()
+            .persistent()
+            .get(&DataKey2::BountyData(escrow_id))
+    }
+
     // --- Internal Helpers ---
 
     fn require_not_paused(env: &Env) {
@@ -4750,8 +5327,10 @@ impl AhjoorEscrowContract {
     fn transfer_to_sellers(env: &Env, escrow: &Escrow, total: i128, escrow_id: u32) {
         let client = token::Client::new(env, &escrow.token);
         if escrow.sellers.len() <= 1 {
-            client.transfer(&env.current_contract_address(), &escrow.seller, &total);
-            events::emit_escrow_released(env, escrow_id, escrow.seller.clone(), total);
+            // Pay current receipt holder if present, otherwise seller
+            let recipient = Self::get_receipt_holder(env, escrow_id).unwrap_or(escrow.seller.clone());
+            client.transfer(&env.current_contract_address(), &recipient, &total);
+            events::emit_escrow_released(env, escrow_id, recipient.clone(), total);
             return;
         }
 
@@ -4856,6 +5435,39 @@ impl AhjoorEscrowContract {
             .instance()
             .set(&DataKey::EscrowCounter, &counter);
         id
+    }
+
+    fn next_receipt_id(env: &Env) -> u32 {
+        let mut counter: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::EscrowReceiptCounter)
+            .unwrap_or(0);
+        let id = counter;
+        counter += 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::EscrowReceiptCounter, &counter);
+        id
+    }
+
+    fn get_receipt_holder(env: &Env, escrow_id: u32) -> Option<Address> {
+        if let Some(receipt_id) = env.storage().persistent().get::<_, u32>(&DataKey::EscrowReceiptByEscrow(escrow_id)) {
+            if let Some(receipt) = env.storage().persistent().get::<_, EscrowReceipt>(&DataKey::EscrowReceipt(receipt_id)) {
+                return Some(receipt.holder);
+            }
+        }
+        None
+    }
+
+    fn burn_receipt_if_exists(env: &Env, escrow_id: u32) {
+        if let Some(receipt_id) = env.storage().persistent().get::<_, u32>(&DataKey::EscrowReceiptByEscrow(escrow_id)) {
+            if let Some(receipt) = env.storage().persistent().get::<_, EscrowReceipt>(&DataKey::EscrowReceipt(receipt_id)) {
+                env.storage().persistent().remove(&DataKey::EscrowReceipt(receipt_id));
+                env.storage().persistent().remove(&DataKey::EscrowReceiptByEscrow(escrow_id));
+                events::emit_escrow_receipt_burned(env, receipt.receipt_id, escrow_id);
+            }
+        }
     }
 
     fn try_auto_renew(env: &Env, old_escrow_id: u32, source: &Escrow) {
@@ -5877,3 +6489,5 @@ mod test_seller_veto;
 mod test_inspector;
 #[cfg(test)]
 mod test_milestone_bps;
+#[cfg(test)]
+mod test_bounty_board;

@@ -82,6 +82,86 @@ fn test_create_escrow() {
 }
 
 #[test]
+fn test_receipt_transfer_and_release_to_new_holder() {
+    let s = setup();
+
+    let buyer = Address::generate(&s.env);
+    let seller = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    let new_holder = Address::generate(&s.env);
+    s.token_admin_client.mint(&buyer, &1000);
+
+    let deadline = s.env.ledger().timestamp() + 1000;
+    let escrow_id = s.client.create_escrow(&buyer, &seller, &arbiter, &250, &s.token_addr, &deadline, &None, &Vec::new(&s.env), &false, &0u32);
+
+    let receipt = s.client.get_escrow_receipt(&escrow_id).expect("receipt exists");
+    let receipt_id = receipt.receipt_id;
+
+    s.client.transfer_escrow_receipt(&seller, &receipt_id, &new_holder);
+
+    s.client.release_escrow(&buyer, &escrow_id);
+
+    assert_eq!(s.token_client.balance(&new_holder), 250);
+    assert!(s.client.get_escrow_receipt(&escrow_id).is_none());
+}
+
+#[test]
+#[should_panic(expected = "Only current holder can transfer receipt")]
+fn test_non_holder_transfer_rejected() {
+    let s = setup();
+
+    let buyer = Address::generate(&s.env);
+    let seller = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    s.token_admin_client.mint(&buyer, &1000);
+
+    let deadline = s.env.ledger().timestamp() + 1000;
+    let escrow_id = s.client.create_escrow(&buyer, &seller, &arbiter, &250, &s.token_addr, &deadline, &None, &Vec::new(&s.env), &false, &0u32);
+
+    let receipt = s.client.get_escrow_receipt(&escrow_id).expect("receipt exists");
+    let receipt_id = receipt.receipt_id;
+
+    // Arbiter is not the holder — should panic
+    s.client.transfer_escrow_receipt(&arbiter, &receipt_id, &Address::generate(&s.env));
+}
+
+#[test]
+#[should_panic(expected = "ActiveMilestoneInProgress")]
+fn test_mid_milestone_transfer_rejection() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+    let seller = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    s.token_admin_client.mint(&buyer, &1000);
+
+    let deadline = s.env.ledger().timestamp() + 1000;
+    let escrow_id = s.client.create_milestone_escrow(&buyer, &seller, &arbiter, &s.token_addr, &deadline, &make_milestones(&s.env, &[100, 100]));
+
+    let receipt = s.client.get_escrow_receipt(&escrow_id).expect("receipt exists");
+    let receipt_id = receipt.receipt_id;
+
+    // Seller cannot transfer while milestones present
+    s.client.transfer_escrow_receipt(&seller, &receipt_id, &Address::generate(&s.env));
+}
+
+#[test]
+fn test_burn_on_cancel() {
+    let s = setup();
+    let buyer = Address::generate(&s.env);
+    let seller = Address::generate(&s.env);
+    let arbiter = Address::generate(&s.env);
+    s.token_admin_client.mint(&buyer, &1000);
+
+    let deadline = s.env.ledger().timestamp() + 1000;
+    let escrow_id = s.client.create_escrow(&buyer, &seller, &arbiter, &250, &s.token_addr, &deadline, &None, &Vec::new(&s.env), &false, &0u32);
+
+    s.client.request_cancellation(&seller, &escrow_id, &BytesN::from_array(&s.env, &[0u8; 32]));
+    s.client.accept_cancellation(&buyer, &escrow_id);
+
+    assert!(s.client.get_escrow_receipt(&escrow_id).is_none());
+}
+
+#[test]
 #[should_panic(expected = "Escrow amount must be positive")]
 fn test_create_escrow_zero_amount_panics() {
     let s = setup();

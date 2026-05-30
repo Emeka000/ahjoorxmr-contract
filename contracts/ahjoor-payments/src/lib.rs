@@ -167,6 +167,8 @@ pub enum Error {
     /// Failed debit record not found (#329)
     DebitRecordNotFound = 26,
     /// Debit record is already abandoned; no further retries (#329)
+    /// Customer is blocked by merchant
+    CustomerBlocked = 50,
     DebitAlreadyAbandoned = 27,
     /// Debit record already succeeded; no retry needed (#329)
     DebitAlreadySucceeded = 28,
@@ -379,6 +381,26 @@ pub struct Payment {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlockEntry {
+    pub customer: Address,
+    pub reason_code: Symbol,
+    pub evidence_hash: BytesN<32>,
+    pub blocked_at_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnblockRequest {
+    pub request_id: u32,
+    pub merchant: Address,
+    pub customer: Address,
+    pub dispute_hash: BytesN<32>,
+    pub requested_at_ledger: u32,
+    pub expires_at_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PaymentRequest {
     pub merchant: Address,
     pub amount: i128,
@@ -543,6 +565,46 @@ pub struct DynamicPayment {
     /// Oracle price at creation time (scaled by 10^7), used for slippage check at settlement
     pub creation_rate: i128,
     pub expiry: u64,
+}
+
+/// Installment payment plan record.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PaymentPlan {
+    /// Unique identifier for the plan.
+    pub plan_id: u32,
+    /// Customer address.
+    pub customer: Address,
+    /// Merchant address.
+    pub merchant: Address,
+    /// Token address for the payment.
+    pub token: Address,
+    /// Total amount to be paid in installments.
+    pub total_amount: i128,
+    /// Number of installments.
+    pub num_installments: u32,
+    /// Amount per installment (assuming equal installments).
+    pub installment_amount: i128,
+    /// Interval in ledgers between installments.
+    pub interval_ledgers: u32,
+    /// Ledger at which the plan expires if not completed.
+    pub expiry_ledger: u64,
+    /// Ledger at which the next installment is due.
+    pub next_due_ledger: u64,
+    /// Number of installments already paid.
+    pub installments_paid: u32,
+    /// Status of the plan.
+    pub status: PlanStatus,
+}
+
+/// Status of an installment plan.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PlanStatus {
+    Active = 0,
+    Paused = 1,
+    Completed = 2,
+    Expired = 3,
 }
 
 /// Per-merchant volume cap configuration (#131)
@@ -746,10 +808,14 @@ pub enum DataKey2 {
     WithdrawalWindowSeconds,
     /// Instance: global default withdrawal cap per window (#231)
     WithdrawalWindowCap,
+    /// Instance: max block age in ledgers (0 = never auto-expire)
+    MaxBlockAgeLedgers,
     /// Persistent: per-merchant withdrawal limit override (#231)
     MerchantWithdrawalLimit(Address),
     /// Persistent: per-merchant withdrawal tracker for current window (#231)
     MerchantWithdrawalWindow(Address),
+    /// Persistent: per-(merchant,customer) block entry
+    CustomerBlockEntry(Address, Address),
     /// Persistent: per-merchant revenue dashboard summary (#226)
     MerchantSummary(Address),
     // --- #239: Loyalty Points ---
@@ -797,6 +863,8 @@ pub enum DataKey2 {
     ConsentIndex(Address, Address, String),
     /// Instance: evidence submission window in ledgers (#308)
     EvidenceWindowLedgers,
+    /// Persistent: unblock request storage
+    UnblockRequest(u32),
     /// Instance: maximum evidence submissions per party (#308)
     MaxEvidenceSubmissions,
     /// Persistent: dispute evidence record for a payment (#308)
@@ -821,6 +889,8 @@ pub enum DataKey2 {
     MaxExtensions,
     /// Instance: refund contract used for merchant reserve enforcement (#334)
     RefundContract,
+    /// Persistent: installment payment plan
+    PaymentPlan(u32),
 }
 
 mod events;
@@ -1101,6 +1171,33 @@ impl AhjoorPaymentsContract {
         Self::require_merchant_approved(&env, &merchant);
         Self::require_merchant_reserve(&env, &merchant);
 
+        // Blocklist lazy-expiry check: if customer is blocked, reject unless entry expired
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey2::CustomerBlockEntry(merchant.clone(), customer.clone()))
+        {
+            let entry: BlockEntry = env
+                .storage()
+                .persistent()
+                .get(&DataKey2::CustomerBlockEntry(merchant.clone(), customer.clone()))
+                .expect("block entry");
+            let now_ledger = env.ledger().sequence();
+            let max_age: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::MaxBlockAgeLedgers)
+                .unwrap_or(0u32);
+            if max_age > 0 && now_ledger > entry.blocked_at_ledger && now_ledger - entry.blocked_at_ledger > max_age {
+                // expired — remove and continue
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey2::CustomerBlockEntry(merchant.clone(), customer.clone()));
+            } else {
+                panic_with_error!(&env, Error::CustomerBlocked);
+            }
+        }
+
         // KYB enforcement check (#310)
         if Self::is_kyb_enforcement_enabled(env.clone()) {
             let kyb_status = Self::get_merchant_kyb_status(env.clone(), merchant.clone());
@@ -1203,6 +1300,59 @@ impl AhjoorPaymentsContract {
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
         payment_id
+    }
+
+    /// Merchant blocks a customer with a reason code and evidence hash.
+    pub fn block_customer(env: Env, merchant: Address, customer: Address, reason_code: Symbol, evidence_hash: BytesN<32>) {
+        Self::require_not_paused(&env);
+        merchant.require_auth();
+
+        let entry = BlockEntry { customer: customer.clone(), reason_code: reason_code.clone(), evidence_hash, blocked_at_ledger: env.ledger().sequence(), };
+        env.storage().persistent().set(&DataKey2::CustomerBlockEntry(merchant.clone(), customer.clone()), &entry);
+        env.storage().persistent().extend_ttl(&DataKey2::CustomerBlockEntry(merchant.clone(), customer.clone()), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        events::emit_customer_blocked(&env, merchant, customer, reason_code);
+    }
+
+    /// Customer requests an unblock within the dispute window; admin reviews later.
+    pub fn request_unblock(env: Env, customer: Address, merchant: Address, dispute_hash: BytesN<32>) {
+        Self::require_not_paused(&env);
+        customer.require_auth();
+
+        let window: u32 = env.storage().instance().get(&DataKey::MaxBlockAgeLedgers).unwrap_or(0u32);
+        let now = env.ledger().sequence();
+        let expires = if window == 0 { now } else { now + window };
+
+        let mut counter: u32 = env.storage().instance().get(&DataKey::PaymentCounter).unwrap_or(0u32);
+        counter += 1;
+        env.storage().instance().set(&DataKey::PaymentCounter, &counter);
+
+        let req = UnblockRequest { request_id: counter, merchant: merchant.clone(), customer: customer.clone(), dispute_hash, requested_at_ledger: now, expires_at_ledger: expires };
+        env.storage().persistent().set(&DataKey2::UnblockRequest(counter), &req);
+        env.storage().persistent().extend_ttl(&DataKey2::UnblockRequest(counter), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        events::emit_unblock_requested(&env, counter, merchant, customer);
+    }
+
+    /// Admin resolves an unblock request.
+    pub fn resolve_unblock_request(env: Env, admin: Address, request_id: u32, approved: bool) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        let stored_admin: Address = env.storage().instance().get(&DataKey::Admin).expect("Not initialized");
+        if admin != stored_admin { panic!("Only admin"); }
+
+        let req: UnblockRequest = env.storage().persistent().get(&DataKey2::UnblockRequest(request_id)).expect("Request not found");
+        if approved {
+            env.storage().persistent().remove(&DataKey2::CustomerBlockEntry(req.merchant.clone(), req.customer.clone()));
+            events::emit_customer_unblocked(&env, req.merchant.clone(), req.customer.clone(), admin);
+        }
+        env.storage().persistent().remove(&DataKey2::UnblockRequest(request_id));
+    }
+
+    /// Merchant voluntarily unblocks a customer immediately.
+    pub fn unblock_customer(env: Env, merchant: Address, customer: Address) {
+        Self::require_not_paused(&env);
+        merchant.require_auth();
+        env.storage().persistent().remove(&DataKey2::CustomerBlockEntry(merchant.clone(), customer.clone()));
+        events::emit_customer_unblocked(&env, merchant, customer, env.invoker());
     }
 
     /// Create multiple payments atomically.

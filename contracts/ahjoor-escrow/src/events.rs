@@ -367,6 +367,54 @@ pub fn emit_escrow_released(e: &Env, escrow_id: u32, seller: Address, amount: i1
     .publish(e);
 }
 
+/// Event: Escrow receipt minted and assigned to seller
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct EscrowReceiptMinted {
+    pub receipt_id: u32,
+    pub escrow_id: u32,
+    pub seller: Address,
+}
+
+/// Event: Escrow receipt transferred to new holder
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct EscrowReceiptTransferred {
+    pub receipt_id: u32,
+    pub from: Address,
+    pub to: Address,
+}
+
+/// Event: Escrow receipt burned (on release or cancel)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct EscrowReceiptBurned {
+    pub receipt_id: u32,
+    pub escrow_id: u32,
+}
+
+pub fn emit_escrow_receipt_minted(e: &Env, receipt_id: u32, escrow_id: u32, seller: Address) {
+    EscrowReceiptMinted {
+        receipt_id,
+        escrow_id,
+        seller,
+    }
+    .publish(e);
+}
+
+pub fn emit_escrow_receipt_transferred(e: &Env, receipt_id: u32, from: Address, to: Address) {
+    EscrowReceiptTransferred {
+        receipt_id,
+        from,
+        to,
+    }
+    .publish(e);
+}
+
+pub fn emit_escrow_receipt_burned(e: &Env, receipt_id: u32, escrow_id: u32) {
+    EscrowReceiptBurned { receipt_id, escrow_id }.publish(e);
+}
+
 pub fn emit_partial_released(
     e: &Env,
     escrow_id: u32,
@@ -1394,6 +1442,132 @@ pub fn emit_partial_release_rejected(
     PartialReleaseRejected {
         escrow_id,
         request_id,
+    }
+    .publish(e);
+}
+
+// ── #319: Bounty Board Events ─────────────────────────────────────────────────
+
+/// Event: Bounty created with open competitive work assignment
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BountyCreated {
+    pub escrow_id: u32,
+    pub buyer: Address,
+    pub amount: i128,
+    pub token: Address,
+    pub description_hash: BytesN<32>,
+    pub claim_deadline_ledger: u64,
+    pub submission_deadline_ledger: u64,
+}
+
+/// Event: Bounty claimed by a solver
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BountyClaimed {
+    pub escrow_id: u32,
+    pub solver: Address,
+}
+
+/// Event: Bounty work submitted by solver
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BountyWorkSubmitted {
+    pub escrow_id: u32,
+    pub solver: Address,
+    pub submission_hash: BytesN<32>,
+}
+
+/// Event: Bounty submission approved and funds awarded to solver
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BountyAwarded {
+    pub escrow_id: u32,
+    pub solver: Address,
+    pub amount: i128,
+}
+
+/// Event: Bounty submission rejected and bounty re-opened
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BountyRejected {
+    pub escrow_id: u32,
+    pub solver: Address,
+    pub rejection_count: u32,
+}
+
+/// Event: Bounty cancelled by buyer (no claims or after max rejections)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BountyCancelled {
+    pub escrow_id: u32,
+    pub buyer: Address,
+    pub refund_amount: i128,
+}
+
+pub fn emit_bounty_created(
+    e: &Env,
+    escrow_id: u32,
+    buyer: Address,
+    amount: i128,
+    token: Address,
+    description_hash: BytesN<32>,
+    claim_deadline_ledger: u64,
+    submission_deadline_ledger: u64,
+) {
+    BountyCreated {
+        escrow_id,
+        buyer,
+        amount,
+        token,
+        description_hash,
+        claim_deadline_ledger,
+        submission_deadline_ledger,
+    }
+    .publish(e);
+}
+
+pub fn emit_bounty_claimed(e: &Env, escrow_id: u32, solver: Address) {
+    BountyClaimed { escrow_id, solver }.publish(e);
+}
+
+pub fn emit_bounty_work_submitted(
+    e: &Env,
+    escrow_id: u32,
+    solver: Address,
+    submission_hash: BytesN<32>,
+) {
+    BountyWorkSubmitted {
+        escrow_id,
+        solver,
+        submission_hash,
+    }
+    .publish(e);
+}
+
+pub fn emit_bounty_awarded(e: &Env, escrow_id: u32, solver: Address, amount: i128) {
+    BountyAwarded {
+        escrow_id,
+        solver,
+        amount,
+    }
+    .publish(e);
+}
+
+pub fn emit_bounty_rejected(e: &Env, escrow_id: u32, solver: Address, rejection_count: u32) {
+    BountyRejected {
+        escrow_id,
+        solver,
+        rejection_count,
+    }
+    .publish(e);
+}
+
+pub fn emit_bounty_cancelled(e: &Env, escrow_id: u32, buyer: Address, refund_amount: i128) {
+    BountyCancelled {
+        escrow_id,
+        buyer,
+        refund_amount,
     }
     .publish(e);
 }
