@@ -1,6 +1,8 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Vec};
 use ahjoor_token_whitelist::TokenWhitelistClient;
+use soroban_sdk::{
+    contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Symbol, Vec,
+};
 
 // --- Storage TTL Constants ---
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_000;
@@ -13,7 +15,9 @@ const PERSISTENT_BUMP_AMOUNT: u32 = 120_000;
 // Minimal payment contract client — only the fields we need from get_payment.
 // ---------------------------------------------------------------------------
 mod payment_contract {
-    use soroban_sdk::{contractclient, contracttype, Address, Env, Map, String, Vec};
+    use soroban_sdk::{
+        contractclient, contracttype, Address, BytesN, Env, Map, String, Symbol, Vec,
+    };
 
     #[contracttype]
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +53,12 @@ mod payment_contract {
         pub metadata: Option<Map<String, String>>,
         pub split_recipients: Option<Vec<SplitRecipient>>,
         pub execute_after: u64,
+        pub category: Option<Symbol>,
+        pub tags: Option<Vec<Symbol>>,
+        pub capture_deadline: u64,
+        pub external_id: Option<BytesN<32>>,
+        pub tipping_enabled: bool,
+        pub extension_count: u32,
     }
 
     #[allow(dead_code)]
@@ -80,6 +90,8 @@ pub enum RefundStatus {
     EscalatedToSenior = 10,
     /// Cross-contract refund registered from a whitelisted origin contract.
     CrossContractRefunded = 11,
+    /// Auto-approved due to merchant non-response (#335)
+    AutoApproved = 12,
 }
 
 /// #238: Priority label for refund requests.
@@ -108,8 +120,8 @@ pub struct Refund {
     pub processed_at: Option<u64>,
     pub rejected_at: Option<u64>,
     pub auto_approved_source: Option<String>, // "whitelist" or "dispute_window"
-    pub escrow_id: Option<u32>,                // For cross-contract escrow refunds
-    pub fee_amount: Option<i128>,              // Fee deducted on processing
+    pub escrow_id: Option<u32>,               // For cross-contract escrow refunds
+    pub fee_amount: Option<i128>,             // Fee deducted on processing
     /// #238: Priority label; defaults to Medium.
     pub priority: Priority,
     /// #276: Ledger sequence by which merchant must submit evidence.
@@ -122,6 +134,10 @@ pub struct Refund {
     pub senior_review_deadline_ledger: u32,
     /// Origin contract address for cross-contract refunds (None for customer-initiated).
     pub origin_contract: Option<Address>,
+    /// Ledger by which merchant must respond before auto-approval (#335)
+    pub auto_approval_deadline_ledger: u32,
+    /// Whether merchant has requested an extension (#335)
+    pub extension_requested: bool,
 }
 
 #[contracttype]
@@ -254,9 +270,53 @@ pub enum DataKey {
     CrossContractWhitelist,
     /// Vec<u32> tracking cross-contract refund IDs for admin queue
     CrossContractRefundQueue,
+
+    // --- Feature: Merchant Reserve Requirement (#334) ---
+    /// Minimum reserve in basis points of monthly volume
+    MinReserveBpsOfMonthlyVolume,
+    /// Per-merchant reserve balance
+    MerchantReserveBalance(Address),
+    /// Alert threshold for low reserve in basis points
+    ReserveAlertThresholdBps,
+    /// Waiver expiry ledger per merchant (#334)
+    ReserveWaiverExpiryLedger(Address),
+
+    // --- Feature: Auto-Approval on Non-Response (#335) ---
+    /// Deadline for merchant response in ledgers
+    MerchantResponseDeadlineLedgers,
+    /// Ledger by which merchant must respond for refund (#335)
+    RefundMerchantDeadlineLedger(u32),
+    /// Whether extension has been used for refund (#335)
+    RefundExtensionUsed(u32),
+    /// Extension duration in ledgers (#335)
+    RefundExtensionLedgers,
+    /// Merchant is exempt from auto-approval on non-response (#335)
+    MerchantAutoApproveExempt(Address),
+    /// Token accepted for merchant reserve deposits (#334)
+    ReserveToken,
+    /// Admin default refund policy for merchants without their own policy (#320)
+    GlobalRefundPolicy,
+
+    // --- Feature: Merchant On-Chain Refund Policy (#320) ---
+    /// Merchant refund policy: (eligible_window_ledgers, max_refund_bps, excluded_tags)
+    MerchantRefundPolicy(Address),
+    /// Policy version snapshot at refund request time (#320)
+    RefundPolicySnapshot(u32),
 }
 
 mod events;
+
+/// Merchant refund policy for on-chain validation (#320)
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RefundPolicy {
+    /// Ledgers within which a refund can be requested
+    pub eligible_window_ledgers: u32,
+    /// Maximum refund amount as basis points (0-10000)
+    pub max_refund_bps: u32,
+    /// Payment tags that are excluded from refunds (empty = none excluded)
+    pub excluded_tags: Vec<Symbol>,
+}
 
 /// Counter-offer record stored during negotiation.
 #[contracttype]
@@ -476,9 +536,10 @@ impl AhjoorRefundContract {
             .set(&DataKey::RefundCooldown, &refund_cooldown_seconds);
 
         // Issue #168: Store customer cancel window
-        env.storage()
-            .instance()
-            .set(&DataKey::CustomerCancelWindow, &customer_cancel_window_seconds);
+        env.storage().instance().set(
+            &DataKey::CustomerCancelWindow,
+            &customer_cancel_window_seconds,
+        );
 
         env.storage()
             .instance()
@@ -535,7 +596,10 @@ impl AhjoorRefundContract {
         if Self::is_buyer_blocked(&env, &customer) {
             let score = Self::get_fraud_score(env.clone(), customer.clone());
             let threshold = Self::get_fraud_score_block_threshold(env.clone());
-            panic!("BuyerBlockedForFraud: score={}, threshold={}", score, threshold);
+            panic!(
+                "BuyerBlockedForFraud: score={}, threshold={}",
+                score, threshold
+            );
         }
 
         // Abuse score check: block customers with active abuse block or threshold exceeded
@@ -607,6 +671,15 @@ impl AhjoorRefundContract {
         if effective_amount + already_refunded > payment.amount {
             panic!("ExceedsRefundableAmount");
         }
+        let policy = Self::refund_policy_for(&env, &merchant);
+        Self::enforce_refund_policy(
+            &env,
+            &policy,
+            payment.created_at,
+            effective_amount,
+            payment.amount,
+            &payment.tags,
+        );
 
         // Cache validated payment data — token comes from the payment record
         let token = payment.token.clone();
@@ -616,7 +689,11 @@ impl AhjoorRefundContract {
 
         // Escrow funds to this contract so approved refunds can be processed.
         let client = token::Client::new(&env, &token);
-        client.transfer(&customer, &env.current_contract_address(), &effective_amount);
+        client.transfer(
+            &customer,
+            &env.current_contract_address(),
+            &effective_amount,
+        );
 
         let refund_id = Self::next_refund_id(&env);
 
@@ -663,13 +740,20 @@ impl AhjoorRefundContract {
 
         let now = env.ledger().timestamp();
         let merchant_response_window: u32 = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::MerchantResponseWindow)
             .unwrap_or(DEFAULT_MERCHANT_RESPONSE_WINDOW_LEDGERS);
         let merch_response_deadline = env.ledger().sequence() + merchant_response_window;
+        let auto_deadline_window: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MerchantResponseDeadlineLedgers)
+            .unwrap_or(DEFAULT_MERCHANT_RESPONSE_WINDOW_LEDGERS);
 
         let primary_review_window: u32 = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::PrimaryReviewDeadlineLedgers)
             .unwrap_or(DEFAULT_PRIMARY_REVIEW_DEADLINE_LEDGERS);
         let primary_review_deadline_ledger = if is_auto_approved {
@@ -681,7 +765,8 @@ impl AhjoorRefundContract {
         // Abuse score: record submission ledger and detect rapid submissions
         let current_seq = env.ledger().sequence();
         let rapid_window: u32 = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::RapidSubmissionWindowLedgers)
             .unwrap_or(DEFAULT_RAPID_SUBMISSION_WINDOW_LEDGERS);
         Self::update_abuse_on_request(&env, &customer, current_seq, rapid_window);
@@ -704,13 +789,32 @@ impl AhjoorRefundContract {
             escrow_id: None,
             fee_amount: None,
             priority: Priority::Medium,
-            merch_response_deadline: if is_auto_approved { 0 } else { merch_response_deadline },
+            merch_response_deadline: if is_auto_approved {
+                0
+            } else {
+                merch_response_deadline
+            },
             evidence_submitted: false,
             primary_review_deadline_ledger,
             senior_review_deadline_ledger: 0,
             origin_contract: None,
+            auto_approval_deadline_ledger: if is_auto_approved {
+                0
+            } else {
+                env.ledger().sequence() + auto_deadline_window
+            },
+            extension_requested: false,
         };
-        env.storage().persistent().set(&DataKey::Refund(refund_id), &refund);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Refund(refund_id), &refund);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RefundPolicySnapshot(refund_id), &policy);
+        env.storage().persistent().set(
+            &DataKey::RefundMerchantDeadlineLedger(refund_id),
+            &refund.auto_approval_deadline_ledger,
+        );
         env.storage().persistent().extend_ttl(
             &DataKey::Refund(refund_id),
             PERSISTENT_LIFETIME_THRESHOLD,
@@ -728,11 +832,7 @@ impl AhjoorRefundContract {
             refund_id,
         );
         let count_key = DataKey::ReasonCodeCount(merchant.clone(), reason_code);
-        let prev_count: u32 = env
-            .storage()
-            .persistent()
-            .get(&count_key)
-            .unwrap_or(0);
+        let prev_count: u32 = env.storage().persistent().get(&count_key).unwrap_or(0);
         env.storage()
             .persistent()
             .set(&count_key, &(prev_count + 1));
@@ -752,9 +852,10 @@ impl AhjoorRefundContract {
         // #166: Record this request timestamp in temporary storage (before customer is moved)
         if cooldown > 0 {
             let now_for_cooldown = env.ledger().timestamp();
-            env.storage()
-                .temporary()
-                .set(&DataKey::LastRefundRequest(customer.clone()), &now_for_cooldown);
+            env.storage().temporary().set(
+                &DataKey::LastRefundRequest(customer.clone()),
+                &now_for_cooldown,
+            );
             env.storage().temporary().extend_ttl(
                 &DataKey::LastRefundRequest(customer.clone()),
                 INSTANCE_BUMP_AMOUNT,
@@ -762,7 +863,14 @@ impl AhjoorRefundContract {
             );
         }
 
-        events::emit_refund_requested(&env, refund_id, customer, effective_amount, token, refund.reason);
+        events::emit_refund_requested(
+            &env,
+            refund_id,
+            customer,
+            effective_amount,
+            token,
+            refund.reason,
+        );
         events::emit_refund_reason_recorded(&env, refund_id, reason_code);
 
         if let (Some(tier_bps), Some(max_refundable)) = (applied_tier_bps, tier_max_refundable) {
@@ -770,7 +878,12 @@ impl AhjoorRefundContract {
         }
 
         if is_whitelisted {
-            events::emit_refund_auto_approved_whitelist(&env, refund_id, merchant.clone(), effective_amount);
+            events::emit_refund_auto_approved_whitelist(
+                &env,
+                refund_id,
+                merchant.clone(),
+                effective_amount,
+            );
         }
 
         if is_threshold_auto_approved {
@@ -840,11 +953,17 @@ impl AhjoorRefundContract {
         let reserve_key = DataKey::MerchantReserve(refund.merchant.clone());
         let reserve_balance: i128 = env.storage().persistent().get(&reserve_key).unwrap_or(0);
         if reserve_balance > 0 {
-            let draw = if reserve_balance >= refund.amount { refund.amount } else { reserve_balance };
+            let draw = if reserve_balance >= refund.amount {
+                refund.amount
+            } else {
+                reserve_balance
+            };
             let new_reserve = reserve_balance - draw;
             env.storage().persistent().set(&reserve_key, &new_reserve);
             env.storage().persistent().extend_ttl(
-                &reserve_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
+                &reserve_key,
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
             );
             // Transfer drawn amount from contract to customer
             let client = token::Client::new(&env, &refund.token);
@@ -926,7 +1045,11 @@ impl AhjoorRefundContract {
 
         // Update fraud score: increment on rejected refund (+2 for admin, +1 for delegate)
         if is_admin {
-            Self::increment_fraud_score(&env, &refund.customer, Symbol::new(&env, "admin_rejected"));
+            Self::increment_fraud_score(
+                &env,
+                &refund.customer,
+                Symbol::new(&env, "admin_rejected"),
+            );
         } else {
             Self::increment_fraud_score(&env, &refund.customer, Symbol::new(&env, "rejected"));
         }
@@ -1051,7 +1174,11 @@ impl AhjoorRefundContract {
             PERSISTENT_BUMP_AMOUNT,
         );
 
-        Self::append_index(&env, &DataKey::CustomerRefunds(payment.customer.clone()), refund_id);
+        Self::append_index(
+            &env,
+            &DataKey::CustomerRefunds(payment.customer.clone()),
+            refund_id,
+        );
         Self::append_index(&env, &DataKey::MerchantRefunds(merchant.clone()), refund_id);
         Self::append_index(&env, &DataKey::PaymentRefunds(payment_id), refund_id);
 
@@ -1185,8 +1312,8 @@ impl AhjoorRefundContract {
             .get(&DataKey::MaxVoucherBonusBps)
             .unwrap_or(DEFAULT_MAX_VOUCHER_BONUS_BPS);
 
-        let max_credit = refund.amount
-            + (refund.amount as u128 * max_bonus_bps as u128 / 10_000) as i128;
+        let max_credit =
+            refund.amount + (refund.amount as u128 * max_bonus_bps as u128 / 10_000) as i128;
 
         if credit_amount > max_credit {
             panic!("VoucherBonusExceedsCap");
@@ -1324,12 +1451,7 @@ impl AhjoorRefundContract {
         );
 
         events::emit_store_credit_redeemed(
-            &env,
-            payment_id,
-            customer,
-            merchant,
-            applied,
-            remaining,
+            &env, payment_id, customer, merchant, applied, remaining,
         );
 
         env.storage()
@@ -1414,7 +1536,8 @@ impl AhjoorRefundContract {
             .unwrap_or(DEFAULT_MAX_VOUCHER_BONUS_BPS)
     }
 
-    pub fn set_refund_tiers(env: Env, admin: Address, tiers: Vec<(u64, u32)>) {        Self::require_admin(&env, &admin);
+    pub fn set_refund_tiers(env: Env, admin: Address, tiers: Vec<(u64, u32)>) {
+        Self::require_admin(&env, &admin);
         Self::validate_refund_tiers(&tiers);
         env.storage().instance().set(&DataKey::RefundTiers, &tiers);
         env.storage()
@@ -1486,11 +1609,7 @@ impl AhjoorRefundContract {
                 .instance()
                 .get::<DataKey, Address>(&DataKey::FeeRecipient)
             {
-                client.transfer(
-                    &env.current_contract_address(),
-                    &fee_recipient,
-                    &fee_amount,
-                );
+                client.transfer(&env.current_contract_address(), &fee_recipient, &fee_amount);
                 events::emit_refund_fee_collected(&env, refund_id, fee_amount);
             }
         }
@@ -1498,7 +1617,11 @@ impl AhjoorRefundContract {
         refund.status = RefundStatus::Processed;
         refund.processed_at = Some(now);
         refund.auto_approved_source = Some(String::from_str(&env, "dispute_window"));
-        refund.fee_amount = if fee_amount > 0 { Some(fee_amount) } else { None };
+        refund.fee_amount = if fee_amount > 0 {
+            Some(fee_amount)
+        } else {
+            None
+        };
 
         env.storage()
             .persistent()
@@ -1763,7 +1886,11 @@ impl AhjoorRefundContract {
             .unwrap_or(0);
         let now = env.ledger().timestamp();
         if now > refund.requested_at + dispute_window {
-            Self::increment_fraud_score(&env, &refund.customer, Symbol::new(&env, "cancelled_late"));
+            Self::increment_fraud_score(
+                &env,
+                &refund.customer,
+                Symbol::new(&env, "cancelled_late"),
+            );
         }
 
         events::emit_refund_request_cancelled(&env, refund_id, customer);
@@ -1952,9 +2079,10 @@ impl AhjoorRefundContract {
         env.storage()
             .instance()
             .set(&DataKey::FraudScore(buyer.clone()), &0u32);
-        env.storage()
-            .instance()
-            .set(&DataKey::FraudScoreLastUpdate(buyer.clone()), &env.ledger().timestamp());
+        env.storage().instance().set(
+            &DataKey::FraudScoreLastUpdate(buyer.clone()),
+            &env.ledger().timestamp(),
+        );
 
         events::emit_fraud_score_reset(&env, buyer, admin);
 
@@ -2011,13 +2139,14 @@ impl AhjoorRefundContract {
 
         let current_score = Self::get_fraud_score(env.clone(), buyer.clone());
         let new_score = current_score.saturating_add(1);
-        
+
         env.storage()
             .instance()
             .set(&DataKey::FraudScore(buyer.clone()), &new_score);
-        env.storage()
-            .instance()
-            .set(&DataKey::FraudScoreLastUpdate(buyer.clone()), &env.ledger().timestamp());
+        env.storage().instance().set(
+            &DataKey::FraudScoreLastUpdate(buyer.clone()),
+            &env.ledger().timestamp(),
+        );
 
         events::emit_fraud_score_updated(&env, buyer.clone(), new_score, reason.clone());
 
@@ -2042,11 +2171,17 @@ impl AhjoorRefundContract {
         env.storage()
             .instance()
             .set(&DataKey::FraudScore(buyer.clone()), &new_score);
-        env.storage()
-            .instance()
-            .set(&DataKey::FraudScoreLastUpdate(buyer.clone()), &env.ledger().timestamp());
+        env.storage().instance().set(
+            &DataKey::FraudScoreLastUpdate(buyer.clone()),
+            &env.ledger().timestamp(),
+        );
 
-        events::emit_fraud_score_updated(&env, buyer.clone(), new_score, Symbol::new(env, "approved"));
+        events::emit_fraud_score_updated(
+            &env,
+            buyer.clone(),
+            new_score,
+            Symbol::new(env, "approved"),
+        );
     }
 
     /// Check if a buyer is blocked from requesting refunds.
@@ -2175,12 +2310,7 @@ impl AhjoorRefundContract {
     }
 
     /// Extend the auto-reject deadline for a specific refund. Admin only.
-    pub fn extend_refund_deadline(
-        env: Env,
-        admin: Address,
-        refund_id: u32,
-        extra_seconds: u64,
-    ) {
+    pub fn extend_refund_deadline(env: Env, admin: Address, refund_id: u32, extra_seconds: u64) {
         Self::require_admin(&env, &admin);
 
         let refund: Refund = env
@@ -2194,11 +2324,7 @@ impl AhjoorRefundContract {
         }
 
         let key = DataKey::RefundDeadlineExtension(refund_id);
-        let current_extension: u64 = env
-            .storage()
-            .persistent()
-            .get(&key)
-            .unwrap_or(0);
+        let current_extension: u64 = env.storage().persistent().get(&key).unwrap_or(0);
 
         env.storage()
             .persistent()
@@ -2326,11 +2452,7 @@ impl AhjoorRefundContract {
                     .instance()
                     .get::<DataKey, Address>(&DataKey::FeeRecipient)
                 {
-                    client.transfer(
-                        &env.current_contract_address(),
-                        &fee_recipient,
-                        &fee_amount,
-                    );
+                    client.transfer(&env.current_contract_address(), &fee_recipient, &fee_amount);
                     events::emit_refund_fee_collected(&env, refund_id, fee_amount);
                 }
             }
@@ -2353,7 +2475,11 @@ impl AhjoorRefundContract {
 
             refund.status = RefundStatus::Processed;
             refund.processed_at = Some(now);
-            refund.fee_amount = if fee_amount > 0 { Some(fee_amount) } else { None };
+            refund.fee_amount = if fee_amount > 0 {
+                Some(fee_amount)
+            } else {
+                None
+            };
 
             Self::update_stats_on_process(&env, &refund.merchant, refund.amount);
         } else {
@@ -2400,11 +2526,7 @@ impl AhjoorRefundContract {
 
     /// Get paginated list of pending (Requested) refund IDs.
     /// page_size is capped at 50. Returns (refund_ids, total, has_more).
-    pub fn get_pending_refund_queue(
-        env: Env,
-        page: u32,
-        page_size: u32,
-    ) -> (Vec<u32>, u32, bool) {
+    pub fn get_pending_refund_queue(env: Env, page: u32, page_size: u32) -> (Vec<u32>, u32, bool) {
         let effective_size = page_size.min(50);
         let queue: Vec<u32> = env
             .storage()
@@ -2567,9 +2689,7 @@ impl AhjoorRefundContract {
 
     /// Get the fee recipient address.
     pub fn get_fee_recipient(env: Env) -> Option<Address> {
-        env.storage()
-            .instance()
-            .get(&DataKey::FeeRecipient)
+        env.storage().instance().get(&DataKey::FeeRecipient)
     }
 
     /// Get the configured dispute window in seconds.
@@ -2949,9 +3069,10 @@ impl AhjoorRefundContract {
         // Update merchant stats
         let mut merchant_stats = Self::get_merchant_refund_stats(env, merchant.clone());
         merchant_stats.total_requested += 1;
-        env.storage()
-            .persistent()
-            .set(&DataKey::MerchantRefundStats(merchant.clone()), &merchant_stats);
+        env.storage().persistent().set(
+            &DataKey::MerchantRefundStats(merchant.clone()),
+            &merchant_stats,
+        );
         env.storage().persistent().extend_ttl(
             &DataKey::MerchantRefundStats(merchant.clone()),
             PERSISTENT_LIFETIME_THRESHOLD,
@@ -2970,9 +3091,10 @@ impl AhjoorRefundContract {
         // Update merchant stats
         let mut merchant_stats = Self::get_merchant_refund_stats(env, merchant.clone());
         merchant_stats.total_approved += 1;
-        env.storage()
-            .persistent()
-            .set(&DataKey::MerchantRefundStats(merchant.clone()), &merchant_stats);
+        env.storage().persistent().set(
+            &DataKey::MerchantRefundStats(merchant.clone()),
+            &merchant_stats,
+        );
         env.storage().persistent().extend_ttl(
             &DataKey::MerchantRefundStats(merchant.clone()),
             PERSISTENT_LIFETIME_THRESHOLD,
@@ -2991,9 +3113,10 @@ impl AhjoorRefundContract {
         // Update merchant stats
         let mut merchant_stats = Self::get_merchant_refund_stats(env, merchant.clone());
         merchant_stats.total_rejected += 1;
-        env.storage()
-            .persistent()
-            .set(&DataKey::MerchantRefundStats(merchant.clone()), &merchant_stats);
+        env.storage().persistent().set(
+            &DataKey::MerchantRefundStats(merchant.clone()),
+            &merchant_stats,
+        );
         env.storage().persistent().extend_ttl(
             &DataKey::MerchantRefundStats(merchant.clone()),
             PERSISTENT_LIFETIME_THRESHOLD,
@@ -3053,9 +3176,10 @@ impl AhjoorRefundContract {
         let mut merchant_stats = Self::get_merchant_refund_stats(env, merchant.clone());
         merchant_stats.total_processed += 1;
         merchant_stats.total_amount_refunded += amount;
-        env.storage()
-            .persistent()
-            .set(&DataKey::MerchantRefundStats(merchant.clone()), &merchant_stats);
+        env.storage().persistent().set(
+            &DataKey::MerchantRefundStats(merchant.clone()),
+            &merchant_stats,
+        );
         env.storage().persistent().extend_ttl(
             &DataKey::MerchantRefundStats(merchant.clone()),
             PERSISTENT_LIFETIME_THRESHOLD,
@@ -3117,11 +3241,7 @@ impl AhjoorRefundContract {
                 .instance()
                 .get::<DataKey, Address>(&DataKey::FeeRecipient)
             {
-                client.transfer(
-                    &env.current_contract_address(),
-                    &fee_recipient,
-                    &fee_amount,
-                );
+                client.transfer(&env.current_contract_address(), &fee_recipient, &fee_amount);
                 events::emit_refund_fee_collected(env, refund_id, fee_amount);
             }
         }
@@ -3157,7 +3277,11 @@ impl AhjoorRefundContract {
 
         refund.status = RefundStatus::Processed;
         refund.processed_at = Some(env.ledger().timestamp());
-        refund.fee_amount = if fee_amount > 0 { Some(fee_amount) } else { None };
+        refund.fee_amount = if fee_amount > 0 {
+            Some(fee_amount)
+        } else {
+            None
+        };
 
         env.storage()
             .persistent()
@@ -3233,7 +3357,11 @@ impl AhjoorRefundContract {
         }
 
         // Prevent duplicate counter-offers
-        if env.storage().persistent().has(&DataKey::CounterOffer(refund_id)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::CounterOffer(refund_id))
+        {
             panic!("Counter-offer already submitted for this refund");
         }
 
@@ -3310,7 +3438,11 @@ impl AhjoorRefundContract {
 
         // Transfer counter-offer amount to customer
         let client = token::Client::new(&env, &refund.token);
-        client.transfer(&env.current_contract_address(), &refund.customer, &offer.amount);
+        client.transfer(
+            &env.current_contract_address(),
+            &refund.customer,
+            &offer.amount,
+        );
 
         refund.status = RefundStatus::Processed;
         refund.processed_at = Some(now);
@@ -3325,7 +3457,9 @@ impl AhjoorRefundContract {
             PERSISTENT_BUMP_AMOUNT,
         );
 
-        env.storage().persistent().remove(&DataKey::CounterOffer(refund_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CounterOffer(refund_id));
 
         events::emit_refund_counter_accepted(&env, refund_id, customer, offer.amount);
 
@@ -3353,7 +3487,9 @@ impl AhjoorRefundContract {
             panic!("Only the customer can reject a counter-offer");
         }
 
-        env.storage().persistent().remove(&DataKey::CounterOffer(refund_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CounterOffer(refund_id));
 
         Self::escalate_counter_offer_to_admin(&env, refund_id, &mut refund);
 
@@ -3389,7 +3525,9 @@ impl AhjoorRefundContract {
             panic!("Counter-offer has not expired yet");
         }
 
-        env.storage().persistent().remove(&DataKey::CounterOffer(refund_id));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::CounterOffer(refund_id));
         Self::escalate_counter_offer_to_admin(&env, refund_id, &mut refund);
     }
 
@@ -3524,7 +3662,11 @@ impl AhjoorRefundContract {
     /// Approve multiple pending refund requests in a single transaction.
     /// Skips IDs that are not in Requested status rather than reverting.
     /// Returns a BatchRefundResult with processed and skipped IDs.
-    pub fn batch_approve_refunds(env: Env, admin: Address, refund_ids: Vec<u32>) -> BatchRefundResult {
+    pub fn batch_approve_refunds(
+        env: Env,
+        admin: Address,
+        refund_ids: Vec<u32>,
+    ) -> BatchRefundResult {
         Self::require_not_paused(&env);
         admin.require_auth();
 
@@ -3553,10 +3695,8 @@ impl AhjoorRefundContract {
 
         for i in 0..refund_ids.len() {
             let refund_id = refund_ids.get(i).unwrap();
-            let maybe_refund: Option<Refund> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Refund(refund_id));
+            let maybe_refund: Option<Refund> =
+                env.storage().persistent().get(&DataKey::Refund(refund_id));
 
             match maybe_refund {
                 Some(mut refund) if refund.status == RefundStatus::Requested => {
@@ -3626,10 +3766,8 @@ impl AhjoorRefundContract {
 
         for i in 0..refund_ids.len() {
             let refund_id = refund_ids.get(i).unwrap();
-            let maybe_refund: Option<Refund> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Refund(refund_id));
+            let maybe_refund: Option<Refund> =
+                env.storage().persistent().get(&DataKey::Refund(refund_id));
 
             match maybe_refund {
                 Some(mut refund) if refund.status == RefundStatus::Requested => {
@@ -3644,7 +3782,11 @@ impl AhjoorRefundContract {
                         PERSISTENT_BUMP_AMOUNT,
                     );
                     Self::remove_from_pending_queue(&env, refund_id);
-                    Self::increment_fraud_score(&env, &refund.customer, Symbol::new(&env, "admin_rejected"));
+                    Self::increment_fraud_score(
+                        &env,
+                        &refund.customer,
+                        Symbol::new(&env, "admin_rejected"),
+                    );
                     Self::update_stats_on_reject(&env, &refund.merchant);
                     events::emit_refund_rejected(
                         &env,
@@ -3683,15 +3825,21 @@ impl AhjoorRefundContract {
         if ratio_bps > 10_000 {
             panic!("reserve_ratio_bps cannot exceed 10000");
         }
-        env.storage().instance().set(&DataKey::ReserveRatioBps, &ratio_bps);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReserveRatioBps, &ratio_bps);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Merchant deposits reserve funds held by the contract.
     pub fn deposit_reserve(env: Env, merchant: Address, token: Address, amount: i128) {
         Self::require_not_paused(&env);
         merchant.require_auth();
-        if amount <= 0 { panic!("amount must be positive"); }
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
         Self::require_token_allowed(&env, &token);
         let client = token::Client::new(&env, &token);
         client.transfer(&merchant, &env.current_contract_address(), &amount);
@@ -3699,7 +3847,11 @@ impl AhjoorRefundContract {
         let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
         let new_balance = current + amount;
         env.storage().persistent().set(&key, &new_balance);
-        env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
         // Clear flagged status if now compliant
         let flag_key = DataKey::MerchantFlagged(merchant.clone());
         if env.storage().persistent().has(&flag_key) {
@@ -3709,14 +3861,18 @@ impl AhjoorRefundContract {
             }
         }
         events::emit_reserve_deposited(&env, merchant, amount);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Merchant withdraws excess reserve (must maintain minimum).
     pub fn withdraw_reserve(env: Env, merchant: Address, token: Address, amount: i128) {
         Self::require_not_paused(&env);
         merchant.require_auth();
-        if amount <= 0 { panic!("amount must be positive"); }
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
         let key = DataKey::MerchantReserve(merchant.clone());
         let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
         let required = Self::required_reserve_internal(&env, &merchant);
@@ -3725,58 +3881,95 @@ impl AhjoorRefundContract {
         }
         let new_balance = current - amount;
         env.storage().persistent().set(&key, &new_balance);
-        env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
         let client = token::Client::new(&env, &token);
         client.transfer(&env.current_contract_address(), &merchant, &amount);
         events::emit_reserve_withdrawn(&env, merchant, amount);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Check if a merchant is compliant with the reserve requirement.
     /// Flags non-compliant merchants; compliant merchants are unflagged.
     pub fn check_reserve_compliance(env: Env, admin: Address, merchant: Address) -> bool {
         Self::require_admin(&env, &admin);
-        let current: i128 = env.storage().persistent()
-            .get(&DataKey::MerchantReserve(merchant.clone())).unwrap_or(0);
+        let current: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MerchantReserve(merchant.clone()))
+            .unwrap_or(0);
         let required = Self::required_reserve_internal(&env, &merchant);
         let compliant = current >= required;
         let flag_key = DataKey::MerchantFlagged(merchant.clone());
         if !compliant {
             env.storage().persistent().set(&flag_key, &true);
-            env.storage().persistent().extend_ttl(&flag_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+            env.storage().persistent().extend_ttl(
+                &flag_key,
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
             events::emit_merchant_flagged_low_reserve(&env, merchant, current, required);
         } else if env.storage().persistent().has(&flag_key) {
             env.storage().persistent().remove(&flag_key);
         }
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         compliant
     }
 
     /// Get the current reserve balance for a merchant.
     pub fn get_merchant_reserve(env: Env, merchant: Address) -> i128 {
-        env.storage().persistent().get(&DataKey::MerchantReserve(merchant)).unwrap_or(0)
+        env.storage()
+            .persistent()
+            .get(&DataKey::MerchantReserve(merchant))
+            .unwrap_or(0)
     }
 
     /// Record payment volume for a merchant (called when a payment is created).
     /// Adds `amount` to the merchant's tracked volume used for reserve compliance.
     pub fn record_payment_volume(env: Env, merchant: Address, amount: i128) {
         Self::require_not_paused(&env);
-        if amount <= 0 { return; }
+        if amount <= 0 {
+            return;
+        }
         let key = DataKey::MerchantVolume(merchant.clone());
         let current: i128 = env.storage().persistent().get(&key).unwrap_or(0);
         env.storage().persistent().set(&key, &(current + amount));
-        env.storage().persistent().extend_ttl(&key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        env.storage().persistent().extend_ttl(
+            &key,
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
         // Block new payment if merchant is flagged
-        if env.storage().persistent().has(&DataKey::MerchantFlagged(merchant)) {
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::MerchantFlagged(merchant))
+        {
             panic!("ReserveBelowMinimum: merchant is non-compliant; deposit reserve before creating payments");
         }
     }
 
     fn required_reserve_internal(env: &Env, merchant: &Address) -> i128 {
-        let ratio_bps: u32 = env.storage().instance().get(&DataKey::ReserveRatioBps).unwrap_or(0);
-        if ratio_bps == 0 { return 0; }
-        let volume: i128 = env.storage().persistent()
-            .get(&DataKey::MerchantVolume(merchant.clone())).unwrap_or(0);
+        let ratio_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ReserveRatioBps)
+            .unwrap_or(0);
+        if ratio_bps == 0 {
+            return 0;
+        }
+        let volume: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MerchantVolume(merchant.clone()))
+            .unwrap_or(0);
         (volume * ratio_bps as i128) / 10_000
     }
 
@@ -3786,9 +3979,15 @@ impl AhjoorRefundContract {
     pub fn set_merchant_response_window(env: Env, admin: Address, window_ledgers: u32) {
         Self::require_not_paused(&env);
         Self::require_admin(&env, &admin);
-        if window_ledgers == 0 { panic!("window_ledgers must be positive"); }
-        env.storage().instance().set(&DataKey::MerchantResponseWindow, &window_ledgers);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        if window_ledgers == 0 {
+            panic!("window_ledgers must be positive");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::MerchantResponseWindow, &window_ledgers);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Merchant submits evidence hashes before the deadline.
@@ -3803,8 +4002,13 @@ impl AhjoorRefundContract {
         Self::require_not_paused(&env);
         merchant.require_auth();
         let mut refund: Refund = env
-            .storage().persistent().get(&DataKey::Refund(refund_id)).expect("Refund not found");
-        if refund.merchant != merchant { panic!("Only the refund merchant can submit evidence"); }
+            .storage()
+            .persistent()
+            .get(&DataKey::Refund(refund_id))
+            .expect("Refund not found");
+        if refund.merchant != merchant {
+            panic!("Only the refund merchant can submit evidence");
+        }
         if refund.status != RefundStatus::Requested {
             panic!("Evidence can only be submitted for Requested refunds");
         }
@@ -3816,9 +4020,13 @@ impl AhjoorRefundContract {
         {
             // Deadline passed — auto-advance status
             refund.status = RefundStatus::EvidencePeriodExpired;
-            env.storage().persistent().set(&DataKey::Refund(refund_id), &refund);
+            env.storage()
+                .persistent()
+                .set(&DataKey::Refund(refund_id), &refund);
             env.storage().persistent().extend_ttl(
-                &DataKey::Refund(refund_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
+                &DataKey::Refund(refund_id),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
             );
             events::emit_evidence_period_expired(&env, refund_id, merchant);
             panic!("EvidenceDeadlinePassed");
@@ -3829,23 +4037,41 @@ impl AhjoorRefundContract {
             statement_hash: statement_hash.clone(),
             submitted_at_ledger: env.ledger().sequence(),
         };
-        env.storage().persistent().set(&DataKey::RefundEvidence(refund_id), &evidence);
+        env.storage()
+            .persistent()
+            .set(&DataKey::RefundEvidence(refund_id), &evidence);
         env.storage().persistent().extend_ttl(
-            &DataKey::RefundEvidence(refund_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
+            &DataKey::RefundEvidence(refund_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
         );
         refund.evidence_submitted = true;
         refund.status = RefundStatus::EvidenceSubmitted;
-        env.storage().persistent().set(&DataKey::Refund(refund_id), &refund);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Refund(refund_id), &refund);
         env.storage().persistent().extend_ttl(
-            &DataKey::Refund(refund_id), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT,
+            &DataKey::Refund(refund_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
         );
-        events::emit_merchant_evidence_submitted(&env, refund_id, merchant, num_hashes, statement_hash);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        events::emit_merchant_evidence_submitted(
+            &env,
+            refund_id,
+            merchant,
+            num_hashes,
+            statement_hash,
+        );
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Get the evidence record for a refund.
     pub fn get_refund_evidence(env: Env, refund_id: u32) -> Option<RefundEvidence> {
-        env.storage().persistent().get(&DataKey::RefundEvidence(refund_id))
+        env.storage()
+            .persistent()
+            .get(&DataKey::RefundEvidence(refund_id))
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -3856,34 +4082,54 @@ impl AhjoorRefundContract {
     pub fn set_primary_review_window(env: Env, admin: Address, ledgers: u32) {
         Self::require_not_paused(&env);
         Self::require_admin(&env, &admin);
-        if ledgers == 0 { panic!("ledgers must be positive"); }
-        env.storage().instance().set(&DataKey::PrimaryReviewDeadlineLedgers, &ledgers);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        if ledgers == 0 {
+            panic!("ledgers must be positive");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::PrimaryReviewDeadlineLedgers, &ledgers);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Admin configures the senior review deadline window in ledgers.
     pub fn set_senior_review_window(env: Env, admin: Address, ledgers: u32) {
         Self::require_not_paused(&env);
         Self::require_admin(&env, &admin);
-        if ledgers == 0 { panic!("ledgers must be positive"); }
-        env.storage().instance().set(&DataKey::SeniorReviewDeadlineLedgers, &ledgers);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        if ledgers == 0 {
+            panic!("ledgers must be positive");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::SeniorReviewDeadlineLedgers, &ledgers);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Admin registers the senior arbiter address.
     pub fn set_senior_arbiter(env: Env, admin: Address, arbiter: Address) {
         Self::require_not_paused(&env);
         Self::require_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::SeniorArbiter, &arbiter);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .set(&DataKey::SeniorArbiter, &arbiter);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Admin enables or disables auto-approval when the senior arbiter misses their deadline.
     pub fn set_auto_approve_on_senior_miss(env: Env, admin: Address, flag: bool) {
         Self::require_not_paused(&env);
         Self::require_admin(&env, &admin);
-        env.storage().instance().set(&DataKey::AutoApproveOnSeniorMiss, &flag);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .set(&DataKey::AutoApproveOnSeniorMiss, &flag);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Get the configured senior arbiter address.
@@ -3898,7 +4144,8 @@ impl AhjoorRefundContract {
         caller.require_auth();
 
         let mut refund: Refund = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::Refund(refund_id))
             .expect("Refund not found");
 
@@ -3918,19 +4165,23 @@ impl AhjoorRefundContract {
         }
 
         let senior_arbiter: Address = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::SeniorArbiter)
             .expect("SeniorArbiterNotConfigured");
 
         let senior_window: u32 = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::SeniorReviewDeadlineLedgers)
             .unwrap_or(DEFAULT_SENIOR_REVIEW_DEADLINE_LEDGERS);
 
         refund.status = RefundStatus::EscalatedToSenior;
         refund.senior_review_deadline_ledger = env.ledger().sequence() + senior_window;
 
-        env.storage().persistent().set(&DataKey::Refund(refund_id), &refund);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Refund(refund_id), &refund);
         env.storage().persistent().extend_ttl(
             &DataKey::Refund(refund_id),
             PERSISTENT_LIFETIME_THRESHOLD,
@@ -3939,7 +4190,9 @@ impl AhjoorRefundContract {
 
         events::emit_refund_escalated(&env, refund_id, caller, senior_arbiter);
 
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Senior arbiter resolves an escalated refund dispute.
@@ -3956,7 +4209,8 @@ impl AhjoorRefundContract {
         senior_arbiter.require_auth();
 
         let stored_arbiter: Address = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::SeniorArbiter)
             .expect("SeniorArbiterNotConfigured");
 
@@ -3965,7 +4219,8 @@ impl AhjoorRefundContract {
         }
 
         let mut refund: Refund = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::Refund(refund_id))
             .expect("Refund not found");
 
@@ -3977,7 +4232,11 @@ impl AhjoorRefundContract {
         let client = token::Client::new(&env, &refund.token);
 
         if approved {
-            let fee_bps: u32 = env.storage().instance().get(&DataKey::RefundFeeBps).unwrap_or(0);
+            let fee_bps: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::RefundFeeBps)
+                .unwrap_or(0);
             let fee_amount = if fee_bps > 0 {
                 (refund.amount as u128 * fee_bps as u128 / 10_000) as i128
             } else {
@@ -3985,16 +4244,25 @@ impl AhjoorRefundContract {
             };
             let customer_amount = refund.amount - fee_amount;
             if customer_amount > 0 {
-                client.transfer(&env.current_contract_address(), &refund.customer, &customer_amount);
+                client.transfer(
+                    &env.current_contract_address(),
+                    &refund.customer,
+                    &customer_amount,
+                );
             }
             if fee_amount > 0 {
-                if let Some(fee_recipient) = env.storage().instance().get::<DataKey, Address>(&DataKey::FeeRecipient) {
+                if let Some(fee_recipient) = env
+                    .storage()
+                    .instance()
+                    .get::<DataKey, Address>(&DataKey::FeeRecipient)
+                {
                     client.transfer(&env.current_contract_address(), &fee_recipient, &fee_amount);
                     events::emit_refund_fee_collected(&env, refund_id, fee_amount);
                 }
             }
             let already_refunded: i128 = env
-                .storage().persistent()
+                .storage()
+                .persistent()
                 .get(&DataKey::RefundedAmount(refund.payment_id))
                 .unwrap_or(0);
             env.storage().persistent().set(
@@ -4009,17 +4277,27 @@ impl AhjoorRefundContract {
             refund.status = RefundStatus::Processed;
             refund.approved_at = Some(now);
             refund.processed_at = Some(now);
-            refund.fee_amount = if fee_amount > 0 { Some(fee_amount) } else { None };
+            refund.fee_amount = if fee_amount > 0 {
+                Some(fee_amount)
+            } else {
+                None
+            };
             Self::update_stats_on_approve(&env, &refund.merchant);
             Self::update_stats_on_process(&env, &refund.merchant, refund.amount);
         } else {
-            client.transfer(&env.current_contract_address(), &refund.customer, &refund.amount);
+            client.transfer(
+                &env.current_contract_address(),
+                &refund.customer,
+                &refund.amount,
+            );
             refund.status = RefundStatus::Rejected;
             refund.rejected_at = Some(now);
             Self::update_stats_on_reject(&env, &refund.merchant);
         }
 
-        env.storage().persistent().set(&DataKey::Refund(refund_id), &refund);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Refund(refund_id), &refund);
         env.storage().persistent().extend_ttl(
             &DataKey::Refund(refund_id),
             PERSISTENT_LIFETIME_THRESHOLD,
@@ -4028,9 +4306,17 @@ impl AhjoorRefundContract {
 
         Self::remove_from_pending_queue(&env, refund_id);
 
-        events::emit_escalated_refund_resolved(&env, refund_id, senior_arbiter, approved, resolution_hash);
+        events::emit_escalated_refund_resolved(
+            &env,
+            refund_id,
+            senior_arbiter,
+            approved,
+            resolution_hash,
+        );
 
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Trigger auto-approval when the senior arbiter has missed their deadline.
@@ -4040,7 +4326,8 @@ impl AhjoorRefundContract {
         Self::require_not_paused(&env);
 
         let auto_approve: bool = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::AutoApproveOnSeniorMiss)
             .unwrap_or(false);
 
@@ -4049,7 +4336,8 @@ impl AhjoorRefundContract {
         }
 
         let mut refund: Refund = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::Refund(refund_id))
             .expect("Refund not found");
 
@@ -4064,7 +4352,11 @@ impl AhjoorRefundContract {
         }
 
         let now = env.ledger().timestamp();
-        let fee_bps: u32 = env.storage().instance().get(&DataKey::RefundFeeBps).unwrap_or(0);
+        let fee_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundFeeBps)
+            .unwrap_or(0);
         let fee_amount = if fee_bps > 0 {
             (refund.amount as u128 * fee_bps as u128 / 10_000) as i128
         } else {
@@ -4073,16 +4365,25 @@ impl AhjoorRefundContract {
         let customer_amount = refund.amount - fee_amount;
         let client = token::Client::new(&env, &refund.token);
         if customer_amount > 0 {
-            client.transfer(&env.current_contract_address(), &refund.customer, &customer_amount);
+            client.transfer(
+                &env.current_contract_address(),
+                &refund.customer,
+                &customer_amount,
+            );
         }
         if fee_amount > 0 {
-            if let Some(fee_recipient) = env.storage().instance().get::<DataKey, Address>(&DataKey::FeeRecipient) {
+            if let Some(fee_recipient) = env
+                .storage()
+                .instance()
+                .get::<DataKey, Address>(&DataKey::FeeRecipient)
+            {
                 client.transfer(&env.current_contract_address(), &fee_recipient, &fee_amount);
                 events::emit_refund_fee_collected(&env, refund_id, fee_amount);
             }
         }
         let already_refunded: i128 = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::RefundedAmount(refund.payment_id))
             .unwrap_or(0);
         env.storage().persistent().set(
@@ -4098,9 +4399,15 @@ impl AhjoorRefundContract {
         refund.status = RefundStatus::Processed;
         refund.processed_at = Some(now);
         refund.auto_approved_source = Some(String::from_str(&env, "senior_miss"));
-        refund.fee_amount = if fee_amount > 0 { Some(fee_amount) } else { None };
+        refund.fee_amount = if fee_amount > 0 {
+            Some(fee_amount)
+        } else {
+            None
+        };
 
-        env.storage().persistent().set(&DataKey::Refund(refund_id), &refund);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Refund(refund_id), &refund);
         env.storage().persistent().extend_ttl(
             &DataKey::Refund(refund_id),
             PERSISTENT_LIFETIME_THRESHOLD,
@@ -4112,7 +4419,9 @@ impl AhjoorRefundContract {
 
         events::emit_refund_auto_approved_senior_miss(&env, refund_id);
 
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -4122,25 +4431,43 @@ impl AhjoorRefundContract {
     /// Admin sets the abuse score block threshold.
     pub fn set_abuse_block_threshold(env: Env, admin: Address, threshold: u32) {
         Self::require_admin(&env, &admin);
-        if threshold == 0 { panic!("threshold must be positive"); }
-        env.storage().instance().set(&DataKey::AbuseBlockThreshold, &threshold);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        if threshold == 0 {
+            panic!("threshold must be positive");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::AbuseBlockThreshold, &threshold);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Admin sets how long (in ledgers) a customer stays blocked after hitting the threshold.
     pub fn set_block_duration_ledgers(env: Env, admin: Address, ledgers: u64) {
         Self::require_admin(&env, &admin);
-        if ledgers == 0 { panic!("ledgers must be positive"); }
-        env.storage().instance().set(&DataKey::BlockDurationLedgers, &ledgers);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        if ledgers == 0 {
+            panic!("ledgers must be positive");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::BlockDurationLedgers, &ledgers);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Admin sets the rapid-submission detection window in ledgers.
     pub fn set_rapid_submission_window_ledgers(env: Env, admin: Address, ledgers: u32) {
         Self::require_admin(&env, &admin);
-        if ledgers == 0 { panic!("ledgers must be positive"); }
-        env.storage().instance().set(&DataKey::RapidSubmissionWindowLedgers, &ledgers);
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        if ledgers == 0 {
+            panic!("ledgers must be positive");
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::RapidSubmissionWindowLedgers, &ledgers);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Admin flags a specific refund denial as abusive, applying the elevated +20 increment.
@@ -4148,7 +4475,8 @@ impl AhjoorRefundContract {
         Self::require_admin(&env, &admin);
 
         let refund: Refund = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::Refund(refund_id))
             .expect("Refund not found");
 
@@ -4158,7 +4486,9 @@ impl AhjoorRefundContract {
 
         Self::increment_abuse_score(&env, &refund.customer, 10, true); // +10 more on top of existing +10
 
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Admin clears a customer's abuse record.
@@ -4175,14 +4505,19 @@ impl AhjoorRefundContract {
             last_increment_ledger: 0,
             last_submission_ledger: 0,
         };
-        env.storage().persistent().set(&DataKey::CustomerAbuseRecord(customer.clone()), &zero_record);
+        env.storage().persistent().set(
+            &DataKey::CustomerAbuseRecord(customer.clone()),
+            &zero_record,
+        );
         env.storage().persistent().extend_ttl(
             &DataKey::CustomerAbuseRecord(customer.clone()),
             PERSISTENT_LIFETIME_THRESHOLD,
             PERSISTENT_BUMP_AMOUNT,
         );
 
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Public read: returns the customer's abuse record with lazy decay applied.
@@ -4194,7 +4529,8 @@ impl AhjoorRefundContract {
 
     fn load_abuse_record_with_decay(env: &Env, customer: &Address) -> RefundAbuseRecord {
         let mut record: RefundAbuseRecord = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::CustomerAbuseRecord(customer.clone()))
             .unwrap_or(RefundAbuseRecord {
                 total_requests: 0,
@@ -4228,26 +4564,34 @@ impl AhjoorRefundContract {
 
         // Check if currently in a block window
         if record.blocked_until_ledger > 0 && current_ledger <= record.blocked_until_ledger {
-            events::emit_customer_blocked_for_abuse(env, customer.clone(), record.blocked_until_ledger);
+            events::emit_customer_blocked_for_abuse(
+                env,
+                customer.clone(),
+                record.blocked_until_ledger,
+            );
             panic!("CustomerBlockedForAbuse");
         }
 
         // Check if score now exceeds threshold (even after decay)
         let threshold: u32 = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::AbuseBlockThreshold)
             .unwrap_or(u32::MAX);
 
         if threshold != u32::MAX && record.abuse_score >= threshold {
             let block_duration: u64 = env
-                .storage().instance()
+                .storage()
+                .instance()
                 .get(&DataKey::BlockDurationLedgers)
                 .unwrap_or(DEFAULT_BLOCK_DURATION_LEDGERS);
             let blocked_until = current_ledger + block_duration;
 
             let mut updated = record.clone();
             updated.blocked_until_ledger = blocked_until;
-            env.storage().persistent().set(&DataKey::CustomerAbuseRecord(customer.clone()), &updated);
+            env.storage()
+                .persistent()
+                .set(&DataKey::CustomerAbuseRecord(customer.clone()), &updated);
             env.storage().persistent().extend_ttl(
                 &DataKey::CustomerAbuseRecord(customer.clone()),
                 PERSISTENT_LIFETIME_THRESHOLD,
@@ -4271,17 +4615,14 @@ impl AhjoorRefundContract {
             record.abuse_score = record.abuse_score.saturating_add(5);
             record.last_increment_ledger = env.ledger().sequence() as u64;
 
-            events::emit_customer_abuse_score_updated(
-                env,
-                customer.clone(),
-                record.abuse_score,
-                5,
-            );
+            events::emit_customer_abuse_score_updated(env, customer.clone(), record.abuse_score, 5);
         }
 
         record.last_submission_ledger = current_seq;
 
-        env.storage().persistent().set(&DataKey::CustomerAbuseRecord(customer.clone()), &record);
+        env.storage()
+            .persistent()
+            .set(&DataKey::CustomerAbuseRecord(customer.clone()), &record);
         env.storage().persistent().extend_ttl(
             &DataKey::CustomerAbuseRecord(customer.clone()),
             PERSISTENT_LIFETIME_THRESHOLD,
@@ -4309,13 +4650,15 @@ impl AhjoorRefundContract {
 
         // Check threshold and apply block
         let threshold: u32 = env
-            .storage().instance()
+            .storage()
+            .instance()
             .get(&DataKey::AbuseBlockThreshold)
             .unwrap_or(u32::MAX);
 
         if threshold != u32::MAX && record.abuse_score >= threshold {
             let block_duration: u64 = env
-                .storage().instance()
+                .storage()
+                .instance()
                 .get(&DataKey::BlockDurationLedgers)
                 .unwrap_or(DEFAULT_BLOCK_DURATION_LEDGERS);
             let current_ledger = env.ledger().sequence() as u64;
@@ -4324,7 +4667,9 @@ impl AhjoorRefundContract {
             events::emit_customer_blocked_for_abuse(env, customer.clone(), blocked_until);
         }
 
-        env.storage().persistent().set(&DataKey::CustomerAbuseRecord(customer.clone()), &record);
+        env.storage()
+            .persistent()
+            .set(&DataKey::CustomerAbuseRecord(customer.clone()), &record);
         env.storage().persistent().extend_ttl(
             &DataKey::CustomerAbuseRecord(customer.clone()),
             PERSISTENT_LIFETIME_THRESHOLD,
@@ -4341,7 +4686,8 @@ impl AhjoorRefundContract {
         Self::require_admin(&env, &admin);
 
         let mut whitelist: Vec<Address> = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::CrossContractWhitelist)
             .unwrap_or(Vec::new(&env));
 
@@ -4352,14 +4698,18 @@ impl AhjoorRefundContract {
         }
 
         whitelist.push_back(contract.clone());
-        env.storage().persistent().set(&DataKey::CrossContractWhitelist, &whitelist);
+        env.storage()
+            .persistent()
+            .set(&DataKey::CrossContractWhitelist, &whitelist);
         env.storage().persistent().extend_ttl(
             &DataKey::CrossContractWhitelist,
             PERSISTENT_LIFETIME_THRESHOLD,
             PERSISTENT_BUMP_AMOUNT,
         );
 
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Admin removes a contract from the cross-contract refund whitelist.
@@ -4367,7 +4717,8 @@ impl AhjoorRefundContract {
         Self::require_admin(&env, &admin);
 
         let whitelist: Vec<Address> = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::CrossContractWhitelist)
             .unwrap_or(Vec::new(&env));
 
@@ -4381,16 +4732,22 @@ impl AhjoorRefundContract {
             }
         }
 
-        if !found { panic!("ContractNotWhitelisted"); }
+        if !found {
+            panic!("ContractNotWhitelisted");
+        }
 
-        env.storage().persistent().set(&DataKey::CrossContractWhitelist, &new_list);
+        env.storage()
+            .persistent()
+            .set(&DataKey::CrossContractWhitelist, &new_list);
         env.storage().persistent().extend_ttl(
             &DataKey::CrossContractWhitelist,
             PERSISTENT_LIFETIME_THRESHOLD,
             PERSISTENT_BUMP_AMOUNT,
         );
 
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Privileged: called by a whitelisted origin contract to register a cross-contract refund.
@@ -4409,11 +4766,14 @@ impl AhjoorRefundContract {
         Self::require_not_paused(&env);
         origin_contract.require_auth();
 
-        if amount <= 0 { panic!("amount must be positive"); }
+        if amount <= 0 {
+            panic!("amount must be positive");
+        }
 
         // Verify origin_contract is whitelisted
         let whitelist: Vec<Address> = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::CrossContractWhitelist)
             .unwrap_or(Vec::new(&env));
         let mut allowed = false;
@@ -4423,7 +4783,9 @@ impl AhjoorRefundContract {
                 break;
             }
         }
-        if !allowed { panic!("UnauthorisedOriginContract"); }
+        if !allowed {
+            panic!("UnauthorisedOriginContract");
+        }
 
         let refund_id = Self::next_refund_id(&env);
         let now = env.ledger().timestamp();
@@ -4453,7 +4815,9 @@ impl AhjoorRefundContract {
             origin_contract: Some(origin_contract.clone()),
         };
 
-        env.storage().persistent().set(&DataKey::Refund(refund_id), &refund);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Refund(refund_id), &refund);
         env.storage().persistent().extend_ttl(
             &DataKey::Refund(refund_id),
             PERSISTENT_LIFETIME_THRESHOLD,
@@ -4465,11 +4829,14 @@ impl AhjoorRefundContract {
 
         // Add to cross-contract queue for admin visibility
         let mut cc_queue: Vec<u32> = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::CrossContractRefundQueue)
             .unwrap_or(Vec::new(&env));
         cc_queue.push_back(refund_id);
-        env.storage().persistent().set(&DataKey::CrossContractRefundQueue, &cc_queue);
+        env.storage()
+            .persistent()
+            .set(&DataKey::CrossContractRefundQueue, &cc_queue);
         env.storage().persistent().extend_ttl(
             &DataKey::CrossContractRefundQueue,
             PERSISTENT_LIFETIME_THRESHOLD,
@@ -4489,14 +4856,17 @@ impl AhjoorRefundContract {
             amount,
         );
 
-        env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
         refund_id
     }
 
     /// Get the list of whitelisted origin contracts.
     pub fn get_cross_contract_whitelist(env: Env) -> Vec<Address> {
-        env.storage().persistent()
+        env.storage()
+            .persistent()
             .get(&DataKey::CrossContractWhitelist)
             .unwrap_or(Vec::new(&env))
     }
@@ -4510,7 +4880,8 @@ impl AhjoorRefundContract {
     ) -> (Vec<Refund>, u32, bool) {
         let effective_size = page_size.min(50);
         let queue: Vec<u32> = env
-            .storage().persistent()
+            .storage()
+            .persistent()
             .get(&DataKey::CrossContractRefundQueue)
             .unwrap_or(Vec::new(&env));
         let total = queue.len();
@@ -4519,11 +4890,493 @@ impl AhjoorRefundContract {
         let mut result: Vec<Refund> = Vec::new(&env);
         for i in start..end {
             let rid = queue.get(i).unwrap();
-            if let Some(r) = env.storage().persistent().get::<DataKey, Refund>(&DataKey::Refund(rid)) {
+            if let Some(r) = env
+                .storage()
+                .persistent()
+                .get::<DataKey, Refund>(&DataKey::Refund(rid))
+            {
                 result.push_back(r);
             }
         }
         (result, total, end < total)
+    }
+
+    // --- #334: Merchant Reserve Minimum Balance Requirement ---
+
+    /// Merchant deposits into reserve balance (cross-contract callable).
+    pub fn deposit_merchant_reserve(env: Env, merchant: Address, amount: i128) {
+        Self::require_not_paused(&env);
+        merchant.require_auth();
+
+        if amount <= 0 {
+            panic!("Amount must be positive");
+        }
+
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ReserveToken)
+            .unwrap_or_else(|| panic!("Reserve token not configured"));
+
+        let client = token::Client::new(&env, &token);
+        client.transfer_from(
+            &env.current_contract_address(),
+            &merchant,
+            &env.current_contract_address(),
+            &amount,
+        );
+
+        let mut balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MerchantReserveBalance(merchant.clone()))
+            .unwrap_or(0);
+        balance += amount;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantReserveBalance(merchant.clone()), &balance);
+        env.storage().persistent().extend_ttl(
+            &DataKey::MerchantReserveBalance(merchant.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_merchant_reserve_deposited(&env, merchant, amount, balance);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Check merchant reserve meets minimum requirement (cross-contract callable).
+    pub fn check_merchant_reserve(env: Env, merchant: Address) -> bool {
+        let min_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinReserveBpsOfMonthlyVolume)
+            .unwrap_or(500); // 5% default
+
+        // Check if waived
+        let waiver_expiry: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ReserveWaiverExpiryLedger(merchant.clone()))
+            .unwrap_or(0);
+        if waiver_expiry > env.ledger().sequence() {
+            return true;
+        }
+
+        let reserve: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MerchantReserveBalance(merchant.clone()))
+            .unwrap_or(0);
+
+        let volume: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MerchantVolume(merchant.clone()))
+            .unwrap_or(0);
+
+        let minimum_required = (volume as u128 * min_bps as u128 / 10_000) as i128;
+        let met = reserve >= minimum_required;
+        let alert_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ReserveAlertThresholdBps)
+            .unwrap_or(10_000);
+        let alert_at = minimum_required * alert_bps as i128 / 10_000;
+
+        // Emit alert if low
+        if reserve < alert_at {
+            events::emit_merchant_reserve_low(&env, merchant, reserve, minimum_required);
+        }
+
+        met
+    }
+
+    /// Withdraw from merchant reserve (blocked if below minimum).
+    pub fn withdraw_merchant_reserve(env: Env, merchant: Address, amount: i128) {
+        Self::require_not_paused(&env);
+        merchant.require_auth();
+
+        if amount <= 0 {
+            panic!("Amount must be positive");
+        }
+
+        let mut balance: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MerchantReserveBalance(merchant.clone()))
+            .unwrap_or(0);
+
+        if balance < amount {
+            panic!("Insufficient reserve balance");
+        }
+
+        // Check that withdrawal doesn't breach minimum
+        let min_bps: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::MinReserveBpsOfMonthlyVolume)
+            .unwrap_or(500);
+
+        let volume: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MerchantVolume(merchant.clone()))
+            .unwrap_or(0);
+
+        let minimum_required = (volume as u128 * min_bps as u128 / 10_000) as i128;
+
+        if balance - amount < minimum_required {
+            panic!("Withdrawal would breach minimum reserve requirement");
+        }
+
+        balance -= amount;
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantReserveBalance(merchant.clone()), &balance);
+
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::ReserveToken)
+            .unwrap_or_else(|| panic!("Reserve token not configured"));
+
+        let client = token::Client::new(&env, &token);
+        client.transfer(&env.current_contract_address(), &merchant, &amount);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin waives reserve requirement for a merchant.
+    pub fn waive_reserve_requirement(
+        env: Env,
+        admin: Address,
+        merchant: Address,
+        waiver_expiry_ledger: u32,
+    ) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+
+        env.storage().instance().set(
+            &DataKey::ReserveWaiverExpiryLedger(merchant.clone()),
+            &waiver_expiry_ledger,
+        );
+        events::emit_reserve_requirement_waived(&env, merchant, waiver_expiry_ledger);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    pub fn set_reserve_config(
+        env: Env,
+        admin: Address,
+        token: Address,
+        min_bps: u32,
+        alert_bps: u32,
+    ) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        env.storage().instance().set(&DataKey::ReserveToken, &token);
+        env.storage()
+            .instance()
+            .set(&DataKey::MinReserveBpsOfMonthlyVolume, &min_bps);
+        env.storage()
+            .instance()
+            .set(&DataKey::ReserveAlertThresholdBps, &alert_bps);
+    }
+
+    pub fn set_merchant_response_deadline(
+        env: Env,
+        admin: Address,
+        deadline_ledgers: u32,
+        extension_ledgers: u32,
+    ) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::MerchantResponseDeadlineLedgers, &deadline_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::RefundExtensionLedgers, &extension_ledgers);
+    }
+
+    pub fn set_merchant_auto_approve_exempt(
+        env: Env,
+        admin: Address,
+        merchant: Address,
+        exempt: bool,
+    ) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantAutoApproveExempt(merchant), &exempt);
+    }
+
+    // --- #335: Refund Auto-Approval on Merchant Non-Response ---
+
+    /// Trigger auto-approval after merchant deadline has passed.
+    pub fn trigger_auto_approval(env: Env, refund_id: u32) {
+        Self::require_not_paused(&env);
+
+        let mut refund: Refund = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Refund(refund_id))
+            .expect("Refund not found");
+
+        if refund.status != RefundStatus::Requested {
+            panic!("RefundNotInRequestedState");
+        }
+        if env
+            .storage()
+            .persistent()
+            .get::<DataKey, bool>(&DataKey::MerchantAutoApproveExempt(refund.merchant.clone()))
+            .unwrap_or(false)
+        {
+            panic!("MerchantAutoApprovalExempt");
+        }
+
+        let now_ledger = env.ledger().sequence();
+        if now_ledger < refund.auto_approval_deadline_ledger {
+            panic!("MerchantDeadlineNotPassed");
+        }
+
+        refund.status = RefundStatus::Approved;
+        refund.approved_at = Some(env.ledger().timestamp());
+        env.storage()
+            .persistent()
+            .set(&DataKey::Refund(refund_id), &refund);
+        Self::process_refund_internal(&env, refund_id);
+        events::emit_refund_auto_approved(&env, refund_id, refund.customer, refund.amount);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Customer requests extension on merchant response deadline (one-time only).
+    pub fn request_review_extension(
+        env: Env,
+        merchant: Address,
+        refund_id: u32,
+        reason_hash: BytesN<32>,
+    ) {
+        Self::require_not_paused(&env);
+        merchant.require_auth();
+
+        let mut refund: Refund = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Refund(refund_id))
+            .expect("Refund not found");
+
+        if refund.merchant != merchant {
+            panic!("OnlyMerchantCanRequestExtension");
+        }
+
+        if refund.extension_requested {
+            panic!("ExtensionAlreadyUsed");
+        }
+
+        let extension_ledgers: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RefundExtensionLedgers)
+            .unwrap_or(120_960); // ~7 days
+
+        refund.auto_approval_deadline_ledger += extension_ledgers;
+        refund.extension_requested = true;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Refund(refund_id), &refund);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Refund(refund_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_review_extension_granted(
+            &env,
+            refund_id,
+            refund.auto_approval_deadline_ledger,
+        );
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    // --- #320: Merchant On-Chain Refund Policy Registry ---
+
+    /// Merchant publishes their refund policy.
+    pub fn publish_refund_policy(
+        env: Env,
+        merchant: Address,
+        eligible_window_ledgers: u32,
+        max_refund_bps: u32,
+        excluded_tags: Vec<Symbol>,
+    ) {
+        Self::require_not_paused(&env);
+        merchant.require_auth();
+
+        if max_refund_bps > 10_000 {
+            panic!("MaxRefundBpsCannotExceed100Percent");
+        }
+
+        let was_update = env
+            .storage()
+            .persistent()
+            .has(&DataKey::MerchantRefundPolicy(merchant.clone()));
+        let policy = RefundPolicy {
+            eligible_window_ledgers,
+            max_refund_bps,
+            excluded_tags,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::MerchantRefundPolicy(merchant.clone()), &policy);
+        env.storage().persistent().extend_ttl(
+            &DataKey::MerchantRefundPolicy(merchant.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        if was_update {
+            events::emit_refund_policy_updated(&env, merchant);
+        } else {
+            events::emit_refund_policy_published(
+                &env,
+                merchant,
+                eligible_window_ledgers,
+                max_refund_bps,
+            );
+        }
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    pub fn set_global_refund_policy(
+        env: Env,
+        admin: Address,
+        eligible_window_ledgers: u32,
+        max_refund_bps: u32,
+        excluded_tags: Vec<Symbol>,
+    ) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        Self::require_admin(&env, &admin);
+        if max_refund_bps > 10_000 {
+            panic!("MaxRefundBpsCannotExceed100Percent");
+        }
+        env.storage().instance().set(
+            &DataKey::GlobalRefundPolicy,
+            &RefundPolicy {
+                eligible_window_ledgers,
+                max_refund_bps,
+                excluded_tags,
+            },
+        );
+    }
+
+    /// Validate refund against merchant's published policy.
+    pub fn validate_against_policy(
+        env: Env,
+        merchant: Address,
+        payment_created_at: u64,
+        refund_amount: i128,
+        payment_amount: i128,
+        payment_tags: Vec<Symbol>,
+    ) -> bool {
+        if let Some(policy) = env
+            .storage()
+            .persistent()
+            .get::<DataKey, RefundPolicy>(&DataKey::MerchantRefundPolicy(merchant.clone()))
+        {
+            // Check window
+            let elapsed_seconds = env.ledger().timestamp().saturating_sub(payment_created_at);
+            let elapsed_ledgers = (elapsed_seconds / 5) as u32; // Approximate
+            if elapsed_ledgers > policy.eligible_window_ledgers {
+                return false;
+            }
+
+            // Check amount
+            let max_refund =
+                (payment_amount as u128 * policy.max_refund_bps as u128 / 10_000) as i128;
+            if refund_amount > max_refund {
+                return false;
+            }
+
+            // Check tags
+            for tag in &payment_tags {
+                if Self::is_tag_excluded(&policy.excluded_tags, tag) {
+                    return false;
+                }
+            }
+
+            return true;
+        }
+
+        // No policy = no restrictions (or apply global default)
+        true
+    }
+
+    fn refund_policy_for(env: &Env, merchant: &Address) -> RefundPolicy {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MerchantRefundPolicy(merchant.clone()))
+            .or_else(|| env.storage().instance().get(&DataKey::GlobalRefundPolicy))
+            .unwrap_or(RefundPolicy {
+                eligible_window_ledgers: u32::MAX,
+                max_refund_bps: 10_000,
+                excluded_tags: Vec::new(env),
+            })
+    }
+
+    fn enforce_refund_policy(
+        env: &Env,
+        policy: &RefundPolicy,
+        payment_created_at: u64,
+        refund_amount: i128,
+        payment_amount: i128,
+        payment_tags: &Option<Vec<Symbol>>,
+    ) {
+        let elapsed_ledgers =
+            (env.ledger().timestamp().saturating_sub(payment_created_at) / 5) as u32;
+        if elapsed_ledgers > policy.eligible_window_ledgers {
+            panic!("RefundOutsideWindow");
+        }
+        if refund_amount > (payment_amount as u128 * policy.max_refund_bps as u128 / 10_000) as i128
+        {
+            panic!("RefundAmountExceedsPolicy");
+        }
+        if let Some(tags) = payment_tags {
+            for tag in tags {
+                if Self::is_tag_excluded(&policy.excluded_tags, tag) {
+                    panic!("PaymentTagExcluded");
+                }
+            }
+        }
+    }
+
+    fn is_tag_excluded(excluded: &Vec<Symbol>, tag: &Symbol) -> bool {
+        for t in excluded {
+            if t == tag {
+                return true;
+            }
+        }
+        false
     }
 }
 
@@ -4541,9 +5394,6 @@ mod test_reserve_fund;
 
 #[cfg(test)]
 mod test_evidence_window;
-
-#[cfg(test)]
-mod test_store_credit;
 
 #[cfg(test)]
 mod test_escalation;
