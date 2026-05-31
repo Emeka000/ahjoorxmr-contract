@@ -1862,3 +1862,25 @@ pub fn emit_subscription_resumed_v2(
         (sub_id, resumed_by, next_due_ledger),
     );
 }
+
+// ── #351: Recurring Payment Scheduler ────────────────────────────────────────
+
+pub fn emit_recurring_payment_executed(
+    e: &soroban_sdk::Env,
+    schedule_id: u32,
+    cycle: u32,
+    amount: i128,
+    next_due: u64,
+) {
+    e.events().publish(
+        (soroban_sdk::Symbol::new(e, "RecurringExec"),),
+        (schedule_id, cycle, amount, next_due),
+    );
+}
+
+pub fn emit_recurring_payment_cancelled(e: &soroban_sdk::Env, schedule_id: u32, payer: soroban_sdk::Address) {
+    e.events().publish(
+        (soroban_sdk::Symbol::new(e, "RecurringCancel"),),
+        (schedule_id, payer),
+    );
+}

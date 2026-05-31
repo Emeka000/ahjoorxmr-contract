@@ -335,6 +335,12 @@ impl AhjoorContract {
 
         events::emit_rosc_init(&env, member_count as u32, contribution_amount);
 
+        // #352: Store immutable base pool target (initial_members × contribution_amount)
+        let base_pool_target = contribution_amount * (member_count as i128);
+        env.storage()
+            .instance()
+            .set(&DataKey2::BasePoolTarget, &base_pool_target);
+
         // Slot Auction Initialization
         env.storage()
             .instance()
@@ -5175,6 +5181,16 @@ impl AhjoorContract {
         events::emit_exit_ok(&env, member.clone(), refund_amount);
         Self::update_credit_score_internal(&env, &member, Symbol::new(&env, "early_exit"));
 
+        // #352: Rebalance contributions after member departure (only if no waitlist fills the slot)
+        let waitlist: Vec<(Address, u64)> = env
+            .storage()
+            .instance()
+            .get(&DataKey2::Waitlist)
+            .unwrap_or(Vec::new(&env));
+        if waitlist.is_empty() {
+            Self::try_rebalance_contribution(&env, Symbol::new(&env, "member_left"));
+        }
+
         // Auto-promote from waitlist to fill the vacancy
         Self::try_promote_from_waitlist(&env, &member);
 
@@ -5937,6 +5953,58 @@ impl AhjoorContract {
 
     /// Internal: promote the first waitlisted address to fill a vacancy left by `vacated_by`.
     /// Records the catch-up contribution debt; the new member must call `pay_catch_up_contribution`.
+    /// #352: Recalculate per-member contribution amount from the immutable base pool target.
+    /// Blocked within 24 hours of the next scheduled payout (round deadline).
+    fn try_rebalance_contribution(env: &Env, reason: Symbol) {
+        // Guard: blocked within 24 hours of next scheduled payout
+        let round_deadline: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::RoundDeadline)
+            .unwrap_or(0);
+        let now = env.ledger().timestamp();
+        const TWENTY_FOUR_HOURS: u64 = 24 * 60 * 60;
+        if round_deadline > 0 && now + TWENTY_FOUR_HOURS > round_deadline {
+            return;
+        }
+
+        let base_pool_target: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey2::BasePoolTarget)
+            .unwrap_or(0);
+        if base_pool_target <= 0 {
+            return;
+        }
+
+        let members: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Members)
+            .unwrap_or(Vec::new(env));
+        let active_count = members.len() as i128;
+        if active_count == 0 {
+            return;
+        }
+
+        let old_amount: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContributionAmt)
+            .unwrap_or(0);
+
+        let new_amount = base_pool_target / active_count;
+        if new_amount == old_amount {
+            return;
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::ContributionAmt, &new_amount);
+
+        events::emit_contribution_rebalanced(env, old_amount, new_amount, reason);
+    }
+
     fn try_promote_from_waitlist(env: &Env, vacated_by: &Address) {
         let waitlist: Vec<(Address, u64)> = env
             .storage()
@@ -5994,6 +6062,9 @@ impl AhjoorContract {
             let client = token::Client::new(env, &token_addr);
             client.transfer(&new_member, &env.current_contract_address(), &catch_up_amount);
         }
+
+        // #352: Rebalance contributions now that active member count has changed
+        Self::try_rebalance_contribution(env, Symbol::new(env, "member_joined"));
 
         events::emit_member_enrolled_from_waitlist(
             env,

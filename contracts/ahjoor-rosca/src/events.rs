@@ -1584,3 +1584,28 @@ pub fn emit_loan_default_deducted(e: &Env, group_id: u32, loan_id: u32, deducted
     }
     .publish(e);
 }
+
+// ── #352: Contribution Rebalancing ───────────────────────────────────────────
+
+/// Event: Per-member contribution amount rebalanced after membership change (#352)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ContributionRebalanced {
+    pub old_amount: i128,
+    pub new_amount: i128,
+    pub reason: soroban_sdk::Symbol,
+}
+
+pub fn emit_contribution_rebalanced(
+    e: &Env,
+    old_amount: i128,
+    new_amount: i128,
+    reason: soroban_sdk::Symbol,
+) {
+    ContributionRebalanced {
+        old_amount,
+        new_amount,
+        reason,
+    }
+    .publish(e);
+}

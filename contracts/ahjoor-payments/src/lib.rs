@@ -607,6 +607,26 @@ pub enum PlanStatus {
     Expired = 3,
 }
 
+/// #351: On-chain recurring payment schedule.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecurringPaymentSchedule {
+    pub schedule_id: u32,
+    pub payer: Address,
+    pub payee: Address,
+    pub token: Address,
+    pub amount: i128,
+    /// Minimum seconds between executions.
+    pub interval_seconds: u64,
+    /// Maximum number of executions (0 = unlimited).
+    pub max_cycles: u32,
+    /// Number of executions completed so far.
+    pub cycles_executed: u32,
+    /// Ledger timestamp at or after which the next execution is permitted.
+    pub next_due: u64,
+    pub active: bool,
+}
+
 /// Per-merchant volume cap configuration (#131)
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -891,6 +911,10 @@ pub enum DataKey2 {
     RefundContract,
     /// Persistent: installment payment plan
     PaymentPlan(u32),
+    /// #351: counter for recurring payment schedules
+    RecurringCounter,
+    /// #351: recurring payment schedule record
+    RecurringSchedule(u32),
 }
 
 mod events;
@@ -8816,6 +8840,181 @@ impl AhjoorPaymentsContract {
                 max_retry_interval: DEFAULT_MAX_RETRY_INTERVAL,
                 max_retry_attempts: DEFAULT_MAX_RETRY_ATTEMPTS,
             })
+    }
+
+    // ── #351: Recurring Payment Scheduler ────────────────────────────────────
+
+    /// Create a recurring payment schedule.
+    /// The payer must separately call `token::approve` on the token contract to grant
+    /// this contract the spending allowance for `amount * max_cycles` (or the
+    /// pre-approved spending module equivalently) before each execution.
+    /// Returns the schedule_id.
+    pub fn create_recurring_payment(
+        env: Env,
+        payer: Address,
+        payee: Address,
+        token: Address,
+        amount: i128,
+        interval_seconds: u64,
+        max_cycles: u32,
+    ) -> u32 {
+        Self::require_not_paused(&env);
+        payer.require_auth();
+
+        if amount <= 0 {
+            panic!("Amount must be positive");
+        }
+        if interval_seconds == 0 {
+            panic!("Interval must be positive");
+        }
+
+        let mut counter: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey2::RecurringCounter)
+            .unwrap_or(0);
+        counter += 1;
+        env.storage()
+            .instance()
+            .set(&DataKey2::RecurringCounter, &counter);
+
+        let schedule_id = counter;
+        let now = env.ledger().timestamp();
+
+        let schedule = RecurringPaymentSchedule {
+            schedule_id,
+            payer: payer.clone(),
+            payee: payee.clone(),
+            token: token.clone(),
+            amount,
+            interval_seconds,
+            max_cycles,
+            cycles_executed: 0,
+            next_due: now,
+            active: true,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::RecurringSchedule(schedule_id), &schedule);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::RecurringSchedule(schedule_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        schedule_id
+    }
+
+    /// Execute a recurring payment schedule.
+    /// Callable by anyone once `ledger_timestamp >= next_due`.
+    /// Transfers `amount` from payer to payee via a pre-approved token allowance.
+    /// Auto-cancels the schedule when `max_cycles` is reached.
+    pub fn execute_recurring(env: Env, schedule_id: u32) {
+        Self::require_not_paused(&env);
+
+        let mut schedule: RecurringPaymentSchedule = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::RecurringSchedule(schedule_id))
+            .expect("Recurring schedule not found");
+
+        if !schedule.active {
+            panic!("Recurring schedule is not active");
+        }
+
+        let now = env.ledger().timestamp();
+        if now < schedule.next_due {
+            panic!("Next execution is not yet due");
+        }
+
+        let client = token::Client::new(&env, &schedule.token);
+        client.transfer_from(
+            &env.current_contract_address(),
+            &schedule.payer,
+            &schedule.payee,
+            &schedule.amount,
+        );
+
+        schedule.cycles_executed += 1;
+        let cycle = schedule.cycles_executed;
+        let next_due = now + schedule.interval_seconds;
+        schedule.next_due = next_due;
+
+        let auto_cancelled = schedule.max_cycles > 0 && cycle >= schedule.max_cycles;
+        if auto_cancelled {
+            schedule.active = false;
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::RecurringSchedule(schedule_id), &schedule);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::RecurringSchedule(schedule_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_recurring_payment_executed(
+            &env,
+            schedule_id,
+            cycle,
+            schedule.amount,
+            if auto_cancelled { 0 } else { next_due },
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Payer cancels their recurring payment schedule at any time.
+    pub fn cancel_recurring_payment(env: Env, payer: Address, schedule_id: u32) {
+        Self::require_not_paused(&env);
+        payer.require_auth();
+
+        let mut schedule: RecurringPaymentSchedule = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::RecurringSchedule(schedule_id))
+            .expect("Recurring schedule not found");
+
+        if schedule.payer != payer {
+            panic!("Only the payer can cancel this schedule");
+        }
+
+        if !schedule.active {
+            panic!("Recurring schedule is already inactive");
+        }
+
+        schedule.active = false;
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::RecurringSchedule(schedule_id), &schedule);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::RecurringSchedule(schedule_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_recurring_payment_cancelled(&env, schedule_id, payer);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get a recurring payment schedule by ID.
+    pub fn get_recurring_schedule(env: Env, schedule_id: u32) -> RecurringPaymentSchedule {
+        env.storage()
+            .persistent()
+            .get(&DataKey2::RecurringSchedule(schedule_id))
+            .expect("Recurring schedule not found")
     }
 }
 

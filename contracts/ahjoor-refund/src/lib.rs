@@ -172,6 +172,8 @@ pub enum DataKey {
     DisputeWindow,
     /// Cumulative refunded amount per payment_id (#165).
     RefundedAmount(u32),
+    /// Cumulative processed (disbursed) refund amount per payment_id (#349).
+    PaymentRefundedAmount(u32),
     /// Whitelist of auto-approved merchants (Issue #163)
     AutoApprovedMerchants,
     /// Escrow contract address for cross-contract refund registration (Issue #162)
@@ -1167,6 +1169,8 @@ impl AhjoorRefundContract {
             primary_review_deadline_ledger: 0,
             senior_review_deadline_ledger: 0,
             origin_contract: None,
+            auto_approval_deadline_ledger: 0,
+            extension_requested: false,
         };
 
         env.storage()
@@ -2616,6 +2620,8 @@ impl AhjoorRefundContract {
             primary_review_deadline_ledger: 0,
             senior_review_deadline_ledger: 0,
             origin_contract: None,
+            auto_approval_deadline_ledger: 0,
+            extension_requested: false,
         };
 
         env.storage()
@@ -3265,6 +3271,22 @@ impl AhjoorRefundContract {
             PERSISTENT_BUMP_AMOUNT,
         );
 
+        // #349: Also update the dedicated PaymentRefundedAmount key and emit partial refund event
+        let prev_processed: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PaymentRefundedAmount(refund.payment_id))
+            .unwrap_or(0);
+        let new_processed_total = prev_processed + refund.amount;
+        env.storage()
+            .persistent()
+            .set(&DataKey::PaymentRefundedAmount(refund.payment_id), &new_processed_total);
+        env.storage().persistent().extend_ttl(
+            &DataKey::PaymentRefundedAmount(refund.payment_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
         let payment_contract_addr: Address = env
             .storage()
             .instance()
@@ -3272,12 +3294,19 @@ impl AhjoorRefundContract {
             .expect("Payment contract not configured");
         let payment_client =
             payment_contract::PaymentContractClient::new(env, &payment_contract_addr);
-        if let Ok(Ok(payment)) = payment_client.try_get_payment(&refund.payment_id) {
+
+        let remaining_amount = if let Ok(Ok(payment)) = payment_client.try_get_payment(&refund.payment_id) {
             let remaining_refundable = payment.amount - new_total;
             if remaining_refundable <= payment.amount / 10 {
                 events::emit_partial_refund_cap_applied(env, refund_id, remaining_refundable);
             }
-        }
+            remaining_refundable
+        } else {
+            0
+        };
+
+        // #349: Emit PartialRefundProcessed with cumulative tracking
+        events::emit_partial_refund_processed(env, refund.payment_id, refund.amount, remaining_amount);
 
         refund.status = RefundStatus::Processed;
         refund.processed_at = Some(env.ledger().timestamp());
@@ -4917,6 +4946,8 @@ impl AhjoorRefundContract {
             primary_review_deadline_ledger: 0,
             senior_review_deadline_ledger: 0,
             origin_contract: Some(origin_contract.clone()),
+            auto_approval_deadline_ledger: 0,
+            extension_requested: false,
         };
 
         env.storage()

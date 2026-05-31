@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, contracttype, token, Address, BytesN, Env, String, Symbol, Vec};
 use ahjoor_token_whitelist::TokenWhitelistClient;
 
 // --- Storage TTL Constants ---
@@ -407,10 +407,6 @@ pub enum DataKey2 {
     BuyerWaiverSigned(u32),
     /// #318: seller waiver signature for conditional release
     SellerWaiverSigned(u32),
-/// Overflow storage keys for escrow — DataKey is capped at 52 variants.
-#[derive(Clone)]
-#[contracttype]
-pub enum DataKey2 {
     /// #332: BPS-based milestone states for proportional progressive release
     EscrowMilestonesV2(u32),
     /// #319: Bounty metadata per escrow
@@ -421,6 +417,12 @@ pub enum DataKey2 {
     CollateralMinRatioBps(u32),
     /// #361: oracle address for collateral health checks per escrow
     CollateralOracle(u32),
+    /// #350: ordered list of authorized approver addresses per escrow
+    MultiPartyApprovers(u32),
+    /// #350: required N-of-M approval threshold per escrow
+    MultiPartyThreshold(u32),
+    /// #350: set of approver addresses that have already approved release
+    ReleaseApprovals(u32),
 }
 
 // ── #332: Milestone BPS Progressive Release ───────────────────────────────────
@@ -1339,7 +1341,8 @@ impl AhjoorEscrowContract {
         Self::try_auto_renew(&env, escrow_id, &renewal_source);
     }
 
-    /// Submit inspection result for an escrow (#316)
+    /// Submit inspection result for an escrow (#316).
+    /// Alias for `submit_inspection_report` supporting the #316 naming convention.
     pub fn submit_inspection_result(
         env: Env,
         inspector: Address,
@@ -1347,109 +1350,62 @@ impl AhjoorEscrowContract {
         approved: bool,
         report_hash: BytesN<32>,
     ) {
-        Self::require_not_paused(&env);
-        inspector.require_auth();
+        Self::submit_inspection_report(env, inspector, escrow_id, approved, report_hash);
+    }
 
-        let mut escrow: Escrow = env
-    /// Trigger conditional release by verifying oracle condition (#318)
+    /// Trigger conditional release by verifying an on-chain oracle condition (#318).
+    /// The escrow must have a `ConditionalRelease` condition set via `set_conditional_release`.
+    /// Callable by anyone; panics if the condition is not yet met.
     pub fn trigger_conditional_release(env: Env, caller: Address, escrow_id: u32) {
         Self::require_not_paused(&env);
         caller.require_auth();
 
-        let escrow: Escrow = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Escrow(escrow_id))
-            .expect("Escrow not found");
-
-        // Verify inspector is set and matches caller
-        let escrow_inspector = escrow.extensions.inspector.clone()
-            .expect("No inspector assigned to this escrow");
-        if escrow_inspector != inspector {
-            panic!("Only the assigned inspector can submit results");
-        }
-
-        if escrow.status != EscrowStatus::AwaitingInspection {
-            panic!("Escrow is not awaiting inspection");
-        }
-
-        // Update status based on approval
-        if approved {
-            escrow.status = EscrowStatus::InspectionPassed;
-        } else {
-            escrow.status = EscrowStatus::InspectionFailed;
-        }
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Escrow(escrow_id), &escrow);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Escrow(escrow_id),
-            PERSISTENT_LIFETIME_THRESHOLD,
-            PERSISTENT_BUMP_AMOUNT,
-        );
-
-        events::emit_inspection_result_submitted(&env, escrow_id, inspector, approved, report_hash);
-
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-    }
-
-    /// Update inspector for an escrow (requires mutual consent) (#316)
-    pub fn update_inspector(
-        env: Env,
-        escrow_id: u32,
-        new_inspector: Address,
-    ) {
-        Self::require_not_paused(&env);
-        let caller = env.invoker();
-
-        let mut escrow: Escrow = env
-        // Get conditional release condition
         let condition: ConditionalRelease = env
             .storage()
             .persistent()
             .get(&DataKey2::ConditionalReleaseCondition(escrow_id))
             .expect("No conditional release set for this escrow");
 
-        // Verify oracle is whitelisted
-        let whitelist: Vec<Address> = env
+        // Use the stored oracle address as the price feed source
+        let oracle_addr: Address = env
             .storage()
             .instance()
-            .get(&DataKey::OracleWhitelist)
-            .unwrap_or(Vec::new(&env));
-        
-        let mut is_whitelisted = false;
-        for addr in whitelist.iter() {
-            if addr == condition.oracle_contract {
-                is_whitelisted = true;
-                break;
-            }
-        }
-        if !is_whitelisted {
-            panic!("Oracle contract not whitelisted");
-        }
+            .get(&DataKey::OracleAddress)
+            .expect("Oracle not configured");
 
-        // Call oracle contract to get condition value
-        let oracle_client = oracle::OracleClient::new(&env, &condition.oracle_contract);
-        let condition_value: i128 = oracle_client.lastprice(&condition.oracle_contract, &condition.oracle_contract)
+        let oracle_client = oracle::OracleClient::new(&env, &oracle_addr);
+        let condition_value: i128 = oracle_client
+            .lastprice(&condition.oracle_contract, &condition.oracle_contract)
             .map(|pd| pd.price)
             .unwrap_or(0);
 
-        // Check if condition is met (>= expected_value)
         if condition_value < condition.expected_value {
             panic!("Condition not met");
         }
 
-        // Condition met, proceed with release
-        events::emit_conditional_release_triggered(&env, escrow_id, condition.oracle_contract, condition_value);
+        events::emit_conditional_release_triggered(
+            &env,
+            escrow_id,
+            condition.oracle_contract,
+            condition_value,
+        );
 
-        // Call release_escrow logic
         Self::release_escrow(env, caller, escrow_id);
     }
 
-    /// Waive conditional release by mutual agreement (#318)
+    /// Update the inspector assigned to an escrow. Requires mutual consent (#316).
+    /// Both buyer and seller must call this function with the same `new_inspector`.
+    pub fn update_inspector(
+        env: Env,
+        caller: Address,
+        escrow_id: u32,
+        new_inspector: Address,
+    ) {
+        Self::replace_inspector(env, caller, escrow_id, new_inspector);
+    }
+
+    /// Waive conditional release by mutual agreement (#318).
+    /// Both buyer and seller must call this to remove the release condition.
     pub fn waive_release_condition(env: Env, caller: Address, escrow_id: u32) {
         Self::require_not_paused(&env);
         caller.require_auth();
@@ -1460,28 +1416,6 @@ impl AhjoorEscrowContract {
             .get(&DataKey::Escrow(escrow_id))
             .expect("Escrow not found");
 
-        // Require both buyer and seller to authorize
-        if caller != escrow.buyer && caller != escrow.seller {
-            panic!("Only buyer or seller can update inspector");
-        }
-
-        let old_inspector = escrow.extensions.inspector.clone()
-            .expect("No inspector assigned to this escrow");
-
-        // For simplicity, we allow either party to update. In a more complex system,
-        // you might require both parties to sign off via a proposal mechanism.
-        escrow.extensions.inspector = Some(new_inspector.clone());
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::Escrow(escrow_id), &escrow);
-        env.storage().persistent().extend_ttl(
-            &DataKey::Escrow(escrow_id),
-            PERSISTENT_LIFETIME_THRESHOLD,
-            PERSISTENT_BUMP_AMOUNT,
-        );
-
-        events::emit_inspector_updated(&env, escrow_id, old_inspector, new_inspector);
         if caller != escrow.buyer && caller != escrow.seller {
             panic!("Only buyer or seller can waive condition");
         }
@@ -1850,6 +1784,7 @@ impl AhjoorEscrowContract {
             release_threshold_price: None,
             arbiter_fee_bps: None,
             dispute_default_winner: None,
+            auto_renew_config: None,
         };
         let escrow_id = Self::create_escrow_core(&env, &buyer, request);
 
@@ -3300,7 +3235,7 @@ impl AhjoorEscrowContract {
         );
 
         // Emit event
-        events::emit_escrow_topped_up(&env, escrow_id, buyer, additional_amount, new_total);
+        events::emit_escrow_topped_up(&env, escrow_id, additional_amount, new_total, buyer);
 
         env.storage()
             .instance()
@@ -3839,6 +3774,7 @@ impl AhjoorEscrowContract {
             release_threshold_price: None,
             arbiter_fee_bps: None,
             dispute_default_winner: None,
+            auto_renew_config: None,
         };
         let escrow_id = Self::create_escrow_core(&env, &buyer, request);
         let lock_data = TimeLockData { unlock_at, beneficiary: beneficiary.clone(), claimed: false };
@@ -5281,6 +5217,22 @@ impl AhjoorEscrowContract {
     ) {
         Self::require_not_paused(&env);
         buyer.require_auth();
+    // ── #350: Multi-Party N-of-M Release Approval ────────────────────────────
+
+    /// Configure N-of-M approval for an existing escrow.
+    /// Only callable by the escrow buyer. Escrow must be Active.
+    /// `approvers`: 2–10 distinct addresses that may approve fund release.
+    /// `threshold`: minimum approvals required to trigger release (1 ≤ threshold ≤ approvers.len()).
+    pub fn set_multiparty_approval(
+        env: Env,
+        buyer: Address,
+        escrow_id: u32,
+        approvers: Vec<Address>,
+        threshold: u32,
+    ) {
+        Self::require_not_paused(&env);
+        buyer.require_auth();
+
         let escrow: Escrow = env
             .storage()
             .persistent()
@@ -5308,6 +5260,65 @@ impl AhjoorEscrowContract {
     pub fn check_collateral_health(env: Env, escrow_id: u32) -> u32 {
         Self::require_not_paused(&env);
         let mut escrow: Escrow = env
+
+        if escrow.buyer != buyer {
+            panic!("Only buyer can configure multi-party approval");
+        }
+
+        if !Self::is_open_escrow_status(escrow.status) {
+            panic!("Escrow is not active");
+        }
+
+        let count = approvers.len();
+        if count < 2 || count > 10 {
+            panic!("Approvers count must be between 2 and 10");
+        }
+
+        if threshold == 0 || threshold > count {
+            panic!("Threshold must be between 1 and approvers count");
+        }
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::MultiPartyApprovers(escrow_id), &approvers);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::MultiPartyApprovers(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::MultiPartyThreshold(escrow_id), &threshold);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::MultiPartyThreshold(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        let empty_approvals: Vec<Address> = Vec::new(&env);
+        env.storage()
+            .persistent()
+            .set(&DataKey2::ReleaseApprovals(escrow_id), &empty_approvals);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::ReleaseApprovals(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Approver signs off on releasing the escrow funds.
+    /// Callable by any address in the configured approvers list.
+    /// When the approval count reaches the threshold, funds are automatically released.
+    pub fn approve_release(env: Env, approver: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        approver.require_auth();
+
+        let escrow: Escrow = env
             .storage()
             .persistent()
             .get(&DataKey::Escrow(escrow_id))
@@ -5423,6 +5434,106 @@ impl AhjoorEscrowContract {
 
         events::emit_collateral_deposited(&env, escrow_id, provider, amount);
         env.storage().instance().extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        if !Self::is_open_escrow_status(escrow.status) {
+            panic!("Escrow is not active");
+        }
+
+        let approvers: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::MultiPartyApprovers(escrow_id))
+            .expect("Multi-party approval not configured for this escrow");
+
+        let mut is_authorized = false;
+        for a in approvers.iter() {
+            if a == approver {
+                is_authorized = true;
+                break;
+            }
+        }
+        if !is_authorized {
+            panic!("Caller is not an authorized approver for this escrow");
+        }
+
+        let mut approvals: Vec<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::ReleaseApprovals(escrow_id))
+            .unwrap_or(Vec::new(&env));
+
+        for a in approvals.iter() {
+            if a == approver {
+                panic!("Approver has already approved this escrow");
+            }
+        }
+
+        approvals.push_back(approver.clone());
+        let approvals_count = approvals.len();
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::ReleaseApprovals(escrow_id), &approvals);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::ReleaseApprovals(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        let threshold: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::MultiPartyThreshold(escrow_id))
+            .expect("Threshold not configured");
+
+        events::emit_multi_party_approval(&env, escrow_id, approver, approvals_count, threshold);
+
+        if approvals_count >= threshold {
+            let total = escrow.amount;
+            Self::transfer_to_sellers(&env, &escrow, total, escrow_id);
+
+            let collateral: i128 = env
+                .storage()
+                .persistent()
+                .get(&DataKey::SellerCollateral(escrow_id))
+                .unwrap_or(0);
+            if collateral > 0 {
+                let client = token::Client::new(&env, &escrow.token);
+                client.transfer(
+                    &env.current_contract_address(),
+                    &escrow.seller,
+                    &collateral,
+                );
+                events::emit_collateral_returned(&env, escrow_id, escrow.seller.clone(), collateral);
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::SellerCollateral(escrow_id));
+            }
+
+            let mut released = escrow;
+            released.status = EscrowStatus::Released;
+            Self::burn_receipt_if_exists(&env, escrow_id);
+
+            env.storage()
+                .persistent()
+                .set(&DataKey::Escrow(escrow_id), &released);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Escrow(escrow_id),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Get the current approval state for a multi-party escrow.
+    pub fn get_release_approvals(env: Env, escrow_id: u32) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey2::ReleaseApprovals(escrow_id))
+            .unwrap_or(Vec::new(&env))
     }
 
     // --- Internal Helpers ---
@@ -6049,6 +6160,7 @@ impl AhjoorEscrowContract {
                 release_threshold_price: None,
                 arbiter_fee_bps: None,
                 dispute_default_winner: None,
+                auto_renew_config: None,
             },
         );
         if required_collateral_bps > 0 {
@@ -6376,6 +6488,7 @@ impl AhjoorEscrowContract {
             release_threshold_price: None,
             arbiter_fee_bps: None,
             dispute_default_winner: None,
+            auto_renew_config: None,
         };
         let escrow_id = Self::create_escrow_core(&env, &buyer, request);
 

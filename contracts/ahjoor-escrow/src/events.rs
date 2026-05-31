@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, Address, BytesN, Env, String, Symbol};
+use soroban_sdk::{contractevent, Address, BytesN, Env, String, Symbol, Vec};
 
 /// Event: Escrow created
 #[contractevent]
@@ -1260,6 +1260,9 @@ pub fn emit_inspection_result_submitted(
         inspector,
         approved,
         report_hash,
+    }
+    .publish(e);
+}
 
 pub fn emit_multi_seller_escrow_released(
     env: &Env,
@@ -1313,6 +1316,8 @@ pub fn emit_release_condition_waived(env: &Env, escrow_id: u32) {
         ("ahjoor", "release_condition_waived"),
         ReleaseConditionWaived { escrow_id },
     );
+}
+
 // ── #332: Milestone BPS Events ────────────────────────────────────────────────
 
 pub fn emit_milestone_submitted(e: &Env, escrow_id: u32, milestone_index: u32, delivery_hash: BytesN<32>) {
@@ -1327,30 +1332,6 @@ pub fn emit_milestone_rejected(e: &Env, escrow_id: u32, milestone_index: u32) {
         (soroban_sdk::Symbol::new(e, "MilestoneRejected"),),
         (escrow_id, milestone_index),
     );
-/// Event: Escrow topped up by buyer
-#[contractevent]
-#[derive(Clone, Debug)]
-pub struct EscrowToppedUp {
-    pub escrow_id: u32,
-    pub buyer: Address,
-    pub additional_amount: i128,
-    pub new_total: i128,
-}
-
-pub fn emit_escrow_topped_up(
-    e: &Env,
-    escrow_id: u32,
-    buyer: Address,
-    additional_amount: i128,
-    new_total: i128,
-) {
-    EscrowToppedUp {
-        escrow_id,
-        buyer,
-        additional_amount,
-        new_total,
-    }
-    .publish(e);
 }
 
 /// Event: Seller acknowledged top-up
@@ -1386,6 +1367,10 @@ pub fn emit_inspector_updated(
         escrow_id,
         old_inspector,
         new_inspector,
+    }
+    .publish(e);
+}
+
 /// Event: Partial release requested by seller
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -1577,6 +1562,34 @@ pub fn emit_bounty_cancelled(e: &Env, escrow_id: u32, buyer: Address, refund_amo
         escrow_id,
         buyer,
         refund_amount,
+    }
+    .publish(e);
+}
+
+// ── #350: Multi-Party N-of-M Release Approval ─────────────────────────────────
+
+/// Event: An approver signed off on releasing escrow funds
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MultiPartyApproval {
+    pub escrow_id: u32,
+    pub approver: Address,
+    pub approvals_count: u32,
+    pub threshold: u32,
+}
+
+pub fn emit_multi_party_approval(
+    e: &Env,
+    escrow_id: u32,
+    approver: Address,
+    approvals_count: u32,
+    threshold: u32,
+) {
+    MultiPartyApproval {
+        escrow_id,
+        approver,
+        approvals_count,
+        threshold,
     }
     .publish(e);
 }

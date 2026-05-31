@@ -293,6 +293,8 @@ pub enum DataKey2 {
     RandomizePayoutOrder,    // bool — enable randomization for this group
     PayoutOrderSeed,         // BytesN<32> — seed for Fisher-Yates shuffle
     PayoutOrderFinalized,    // bool — track if order has been finalized
+    // #352: Contribution Rebalancing
+    BasePoolTarget,          // i128 — immutable payout target per cycle (initial_members × contribution_amount)
 }
 
 /// Overflow key enum — DataKey2 is capped at 50 variants by the soroban XDR limit.

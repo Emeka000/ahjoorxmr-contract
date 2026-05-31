@@ -1,4 +1,4 @@
-use soroban_sdk::{contractevent, Address, BytesN, Env, String};
+use soroban_sdk::{contractevent, Address, BytesN, Env, String, Symbol};
 
 /// Event: Refund reason code recorded (#157)
 #[contractevent]
@@ -1033,6 +1033,31 @@ pub fn emit_customer_blocked_for_abuse(e: &Env, customer: Address, blocked_until
     CustomerBlockedForAbuse {
         customer,
         blocked_until_ledger,
+    }
+    .publish(e);
+}
+
+// ─── Issue #349: Partial Refund Processed ────────────────────────────────────
+
+/// Event: A partial refund was processed; tracks cumulative progress per payment.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct PartialRefundProcessed {
+    pub payment_id: u32,
+    pub refund_amount: i128,
+    pub remaining_amount: i128,
+}
+
+pub fn emit_partial_refund_processed(
+    e: &Env,
+    payment_id: u32,
+    refund_amount: i128,
+    remaining_amount: i128,
+) {
+    PartialRefundProcessed {
+        payment_id,
+        refund_amount,
+        remaining_amount,
     }
     .publish(e);
 }
