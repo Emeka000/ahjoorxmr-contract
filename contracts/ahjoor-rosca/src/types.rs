@@ -393,6 +393,21 @@ pub enum PersistentKey {
     LastSnapshotLedger,        // u32 — last snapshot ledger for spam guard (#243)
     MinSnapshotIntervalLedgers, // u32 — min interval between snapshots (#243)
     MemberCreditScores,        // Map<Address, MemberScore> — per-member credit score (#269)
+    /// #364: Point-in-time cycle snapshot keyed by cycle number
+    CycleSnapshot(u32),        // cycle_number → CycleSnapshotData
+}
+
+/// #364: Immutable point-in-time snapshot of group state at cycle end.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CycleSnapshotData {
+    pub cycle_number: u32,
+    pub members: Vec<Address>,
+    pub contribution_amounts: Map<Address, i128>,
+    pub payout_queue: Vec<Address>,
+    pub pool_balance: i128,
+    pub timestamp: u64,
+    pub snapshot_hash: BytesN<32>,
 }
 
 /// Record of a single freeze/unfreeze cycle for a group.
