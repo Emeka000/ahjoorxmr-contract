@@ -1,5 +1,5 @@
-use crate::{errors::{Error, ExtError}, events, audit_trail, ContributionEntry, DataKey, DataKey2, DataKey3, PersistentKey, PayoutRecord, SlotBid, types::{InsuranceClaim, InsuranceCoverageMode}};
-use soroban_sdk::{panic_with_error, token, Address, Env, Map, Vec};
+use crate::{errors::{Error, ExtError}, events, audit_trail, ContributionEntry, CycleSnapshotData, DataKey, DataKey2, DataKey3, PersistentKey, PayoutRecord, SlotBid, types::{InsuranceClaim, InsuranceCoverageMode}};
+use soroban_sdk::{panic_with_error, token, Address, Bytes, BytesN, Env, Map, Vec};
 
 const PERSISTENT_LIFETIME_THRESHOLD: u32 = 100_000;
 const PERSISTENT_BUMP_AMOUNT: u32 = 120_000;
@@ -259,6 +259,39 @@ pub(crate) fn complete_round_payout(env: &Env, _paid_members: &Vec<Address>) {
         payout_recipient.clone(),
         total_payout_history_amt,
     );
+
+    // #364: Create immutable cycle snapshot before state is reset
+    {
+        let snap_members: Vec<Address> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Members)
+            .unwrap_or(Vec::new(env));
+        let mut preimage = Bytes::new(env);
+        preimage.extend_from_array(&current_round.to_be_bytes());
+        preimage.extend_from_array(&total_payout_history_amt.to_be_bytes());
+        preimage.extend_from_array(&(payout_order.len() as u32).to_be_bytes());
+        let snap_hash: BytesN<32> = env.crypto().sha256(&preimage).into();
+        let cycle_snapshot = CycleSnapshotData {
+            cycle_number: current_round,
+            members: snap_members,
+            contribution_amounts: member_contributions.clone(),
+            payout_queue: payout_order.clone(),
+            pool_balance: total_payout_history_amt,
+            timestamp: env.ledger().timestamp(),
+            snapshot_hash: snap_hash.clone(),
+        };
+        env.storage()
+            .persistent()
+            .set(&PersistentKey::CycleSnapshot(current_round), &cycle_snapshot);
+        env.storage().persistent().extend_ttl(
+            &PersistentKey::CycleSnapshot(current_round),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+        events::emit_snapshot_created(env, 0u32, current_round, snap_hash);
+    }
+
     reset_round_state(env, current_round);
 
     // Apply reinvestment to the next round's contributions

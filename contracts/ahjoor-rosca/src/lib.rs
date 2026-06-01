@@ -8599,6 +8599,22 @@ impl AhjoorContract {
         items
     }
 
+    // ── #364: Cycle Snapshot Versioning ──────────────────────────────────────
+
+    /// Returns the immutable cycle snapshot stored at cycle end for the given cycle number.
+    /// `group_id` is accepted for interface consistency but ignored (each contract is one group).
+    pub fn get_cycle_snapshot(env: Env, _group_id: u32, cycle_number: u32) -> CycleSnapshotData {
+        let snapshot: CycleSnapshotData = env
+            .storage()
+            .persistent()
+            .get(&PersistentKey::CycleSnapshot(cycle_number))
+            .expect("CycleSnapshot not found");
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        snapshot
+    }
+
     /// Get the current payout order (randomized if enabled and finalized).
     pub fn get_payout_order(env: Env) -> Vec<Address> {
         let payout_order: Vec<Address> = env

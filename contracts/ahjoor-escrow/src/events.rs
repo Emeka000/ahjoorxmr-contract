@@ -1621,3 +1621,50 @@ pub fn emit_scheduled_release_executed(
     }
     .publish(e);
 }
+
+// ── #366: Seller Veto Override Events ────────────────────────────────────────
+
+/// Event: Seller raised a veto blocking fund release (#366)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SellerVetoRaised {
+    pub escrow_id: u32,
+    pub seller: Address,
+    pub veto_timestamp: u64,
+}
+
+/// Event: Seller cancelled their veto before the override window elapsed (#366)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SellerVetoCancelled {
+    pub escrow_id: u32,
+    pub seller: Address,
+}
+
+/// Event: Admin overrode the seller veto after the window elapsed (#366)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct VetoOverridden {
+    pub escrow_id: u32,
+    pub admin: Address,
+    pub reason_hash: BytesN<32>,
+    pub elapsed_seconds: u64,
+}
+
+pub fn emit_seller_veto_raised(e: &Env, escrow_id: u32, seller: Address, veto_timestamp: u64) {
+    SellerVetoRaised { escrow_id, seller, veto_timestamp }.publish(e);
+}
+
+pub fn emit_seller_veto_cancelled(e: &Env, escrow_id: u32, seller: Address) {
+    SellerVetoCancelled { escrow_id, seller }.publish(e);
+}
+
+pub fn emit_veto_overridden(
+    e: &Env,
+    escrow_id: u32,
+    admin: Address,
+    reason_hash: BytesN<32>,
+    elapsed_seconds: u64,
+) {
+    VetoOverridden { escrow_id, admin, reason_hash, elapsed_seconds }.publish(e);
+}

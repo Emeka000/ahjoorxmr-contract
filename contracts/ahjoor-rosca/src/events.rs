@@ -1642,3 +1642,18 @@ pub fn emit_late_count_reset(e: &Env, member: Address) {
     LateCountReset { member }.publish(e);
 }
 
+// ── #364: Cycle Snapshot Versioning ──────────────────────────────────────────
+
+/// Event: Automated cycle snapshot created at cycle end (#364)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SnapshotCreated {
+    pub group_id: u32,
+    pub cycle_number: u32,
+    pub snapshot_hash: BytesN<32>,
+}
+
+pub fn emit_snapshot_created(e: &Env, group_id: u32, cycle_number: u32, snapshot_hash: BytesN<32>) {
+    SnapshotCreated { group_id, cycle_number, snapshot_hash }.publish(e);
+}
+

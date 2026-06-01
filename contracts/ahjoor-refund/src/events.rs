@@ -1119,3 +1119,31 @@ pub fn emit_abuse_score_decayed(
     }
     .publish(e);
 }
+
+// ─── Issue #365: Evidence Hash Anchoring ─────────────────────────────────────
+
+/// Event: Evidence content hash anchored on-chain for a refund (#365)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct EvidenceAnchored {
+    pub refund_id: u32,
+    pub submitter: Address,
+    pub content_hash: BytesN<32>,
+    pub timestamp: u64,
+}
+
+pub fn emit_evidence_anchored(
+    e: &Env,
+    refund_id: u32,
+    submitter: Address,
+    content_hash: BytesN<32>,
+    timestamp: u64,
+) {
+    EvidenceAnchored {
+        refund_id,
+        submitter,
+        content_hash,
+        timestamp,
+    }
+    .publish(e);
+}

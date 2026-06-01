@@ -915,9 +915,26 @@ pub enum DataKey2 {
     RecurringCounter,
     /// #351: recurring payment schedule record
     RecurringSchedule(u32),
+    /// #367: 30-day rolling settled volume record per merchant
+    MerchantSettlementVolume(Address),
 }
 
 mod events;
+
+// ── #367: Dynamic Settlement Fee Tiers ───────────────────────────────────────
+
+/// Rolling settled-volume record for the 30-day fee-tier window (#367).
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MerchantSettlementRecord {
+    /// Cumulative settled amount within the current 30-day window.
+    pub volume_30d: i128,
+    /// Ledger timestamp when the current window started.
+    pub window_start_timestamp: u64,
+}
+
+/// 30-day window duration in seconds (30 × 24 × 3600).
+const SETTLEMENT_VOLUME_WINDOW_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 // ── #329: Failed Auto-Debit Retry Queue ───────────────────────────────────────
 
@@ -1624,7 +1641,24 @@ impl AhjoorPaymentsContract {
                 .expect("Settlement amount overflow");
         }
 
-        let fee_collected = (total_amount * SETTLEMENT_FEE_BPS) / 10_000;
+        // #367: Load 30-day rolling settlement volume and determine fee tier
+        let now_ts = env.ledger().timestamp();
+        let mut settlement_record: MerchantSettlementRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::MerchantSettlementVolume(merchant.clone()))
+            .unwrap_or(MerchantSettlementRecord {
+                volume_30d: 0,
+                window_start_timestamp: now_ts,
+            });
+        if now_ts.saturating_sub(settlement_record.window_start_timestamp) >= SETTLEMENT_VOLUME_WINDOW_SECONDS {
+            settlement_record.volume_30d = 0;
+            settlement_record.window_start_timestamp = now_ts;
+        }
+        let projected_volume = settlement_record.volume_30d.saturating_add(total_amount);
+        let tier_fee_bps = Self::fee_bps_for_volume(&env, projected_volume);
+
+        let fee_collected = (total_amount * tier_fee_bps as i128) / 10_000;
         let net_amount = total_amount
             .checked_sub(fee_collected)
             .expect("Settlement fee exceeds amount");
@@ -1634,6 +1668,31 @@ impl AhjoorPaymentsContract {
 
         let token_client = token::Client::new(&env, &settlement_token);
         token_client.transfer(&env.current_contract_address(), &merchant, &net_amount);
+
+        if fee_collected > 0 {
+            if let Some(fee_recipient) = env
+                .storage()
+                .instance()
+                .get::<_, Address>(&DataKey::FeeRecipient)
+            {
+                token_client.transfer(
+                    &env.current_contract_address(),
+                    &fee_recipient,
+                    &fee_collected,
+                );
+            }
+        }
+
+        // #367: Persist updated rolling volume
+        settlement_record.volume_30d = projected_volume;
+        env.storage()
+            .persistent()
+            .set(&DataKey2::MerchantSettlementVolume(merchant.clone()), &settlement_record);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::MerchantSettlementVolume(merchant.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
 
         for payment_id in payment_ids.iter() {
             env.storage()
@@ -1645,6 +1704,14 @@ impl AhjoorPaymentsContract {
                 PERSISTENT_BUMP_AMOUNT,
             );
         }
+
+        events::emit_tier_fee_applied(
+            &env,
+            merchant.clone(),
+            tier_fee_bps,
+            fee_collected,
+            projected_volume,
+        );
 
         events::emit_batch_settlement_processed(
             &env,
@@ -2627,6 +2694,49 @@ impl AhjoorPaymentsContract {
     pub fn get_merchant_fee_tier(env: Env, merchant: Address) -> u32 {
         let volume = Self::rolling_merchant_volume(&env, &merchant);
         Self::fee_bps_for_volume(&env, volume)
+    }
+
+    // ── #367: Settlement-specific tier view ───────────────────────────────────
+
+    /// Returns the merchant's current settlement fee tier info:
+    /// `(fee_bps, volume_30d, volume_headroom)` where `volume_headroom` is the
+    /// remaining capacity in the current tier before the next threshold is crossed.
+    /// Returns (default_fee_bps, 0, i128::MAX) if no settlement history exists.
+    pub fn get_merchant_settlement_tier(env: Env, merchant: Address) -> (u32, i128, i128) {
+        let now_ts = env.ledger().timestamp();
+        let record: MerchantSettlementRecord = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::MerchantSettlementVolume(merchant.clone()))
+            .unwrap_or(MerchantSettlementRecord {
+                volume_30d: 0,
+                window_start_timestamp: now_ts,
+            });
+        let volume = if now_ts.saturating_sub(record.window_start_timestamp) >= SETTLEMENT_VOLUME_WINDOW_SECONDS {
+            0i128
+        } else {
+            record.volume_30d
+        };
+        let fee_bps = Self::fee_bps_for_volume(&env, volume);
+        let tiers: Vec<FeeTier> = env
+            .storage()
+            .instance()
+            .get(&DataKey::FeeTiers)
+            .unwrap_or(Vec::new(&env));
+        // Find the next tier threshold above current volume
+        let mut headroom = i128::MAX;
+        for tier in tiers.iter() {
+            if tier.min_volume > volume {
+                let gap = tier.min_volume.saturating_sub(volume);
+                if gap < headroom {
+                    headroom = gap;
+                }
+            }
+        }
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        (fee_bps, volume, headroom)
     }
 
     /// Admin updates global per-customer payment rate limit settings.

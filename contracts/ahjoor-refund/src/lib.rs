@@ -312,6 +312,10 @@ pub enum DataKey {
     AbuseScoreDecayPeriodLedgers,
     /// Decay factor in basis points per period (e.g. 5000 = halve every period). Default: 5000.
     AbuseScoreDecayFactorBps,
+
+    // --- Feature: Evidence Hash Anchoring (#365) ---
+    /// On-chain SHA-256 content hash anchor per (refund_id, submitter) (#365)
+    EvidenceHash(u32, Address),
 }
 
 mod events;
@@ -4130,13 +4134,16 @@ impl AhjoorRefundContract {
     }
 
     /// Merchant submits evidence hashes before the deadline.
-    /// Can only be called once per refund.
+    /// `content_hash` is a SHA-256 hash of the actual evidence content anchored on-chain (#365).
+    /// While the window is open, a second call from the same merchant overwrites the previous hash.
+    /// After the window closes, any submission is rejected.
     pub fn submit_refund_evidence(
         env: Env,
         merchant: Address,
         refund_id: u32,
         evidence_hashes: Vec<BytesN<32>>,
         statement_hash: BytesN<32>,
+        content_hash: BytesN<32>,
     ) {
         Self::require_not_paused(&env);
         merchant.require_auth();
@@ -4148,26 +4155,26 @@ impl AhjoorRefundContract {
         if refund.merchant != merchant {
             panic!("Only the refund merchant can submit evidence");
         }
-        if refund.status != RefundStatus::Requested {
-            panic!("Evidence can only be submitted for Requested refunds");
+        if refund.status != RefundStatus::Requested && refund.status != RefundStatus::EvidenceSubmitted {
+            panic!("Evidence can only be submitted for Requested or EvidenceSubmitted refunds");
         }
-        if refund.evidence_submitted {
-            panic!("EvidenceAlreadySubmitted");
-        }
+        // Window check: reject if deadline has passed
         if refund.merch_response_deadline > 0
             && env.ledger().sequence() > refund.merch_response_deadline
         {
-            // Deadline passed — auto-advance status
-            refund.status = RefundStatus::EvidencePeriodExpired;
-            env.storage()
-                .persistent()
-                .set(&DataKey::Refund(refund_id), &refund);
-            env.storage().persistent().extend_ttl(
-                &DataKey::Refund(refund_id),
-                PERSISTENT_LIFETIME_THRESHOLD,
-                PERSISTENT_BUMP_AMOUNT,
-            );
-            events::emit_evidence_period_expired(&env, refund_id, merchant);
+            // Deadline passed — auto-advance status if not already advanced
+            if refund.status != RefundStatus::EvidencePeriodExpired {
+                refund.status = RefundStatus::EvidencePeriodExpired;
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::Refund(refund_id), &refund);
+                env.storage().persistent().extend_ttl(
+                    &DataKey::Refund(refund_id),
+                    PERSISTENT_LIFETIME_THRESHOLD,
+                    PERSISTENT_BUMP_AMOUNT,
+                );
+                events::emit_evidence_period_expired(&env, refund_id, merchant);
+            }
             panic!("EvidenceDeadlinePassed");
         }
         let num_hashes = evidence_hashes.len();
@@ -4184,6 +4191,15 @@ impl AhjoorRefundContract {
             PERSISTENT_LIFETIME_THRESHOLD,
             PERSISTENT_BUMP_AMOUNT,
         );
+        // #365: Anchor content hash on-chain; overwrites any prior hash while window is open
+        env.storage()
+            .persistent()
+            .set(&DataKey::EvidenceHash(refund_id, merchant.clone()), &content_hash);
+        env.storage().persistent().extend_ttl(
+            &DataKey::EvidenceHash(refund_id, merchant.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
         refund.evidence_submitted = true;
         refund.status = RefundStatus::EvidenceSubmitted;
         env.storage()
@@ -4194,6 +4210,8 @@ impl AhjoorRefundContract {
             PERSISTENT_LIFETIME_THRESHOLD,
             PERSISTENT_BUMP_AMOUNT,
         );
+        let now = env.ledger().timestamp();
+        events::emit_evidence_anchored(&env, refund_id, merchant.clone(), content_hash, now);
         events::emit_merchant_evidence_submitted(
             &env,
             refund_id,
@@ -4211,6 +4229,22 @@ impl AhjoorRefundContract {
         env.storage()
             .persistent()
             .get(&DataKey::RefundEvidence(refund_id))
+    }
+
+    // ─── #365: Evidence Hash Anchoring ───────────────────────────────────────
+
+    /// Returns `true` if the stored content hash for `(refund_id, submitter)` matches `hash`.
+    /// Returns `false` if no hash is stored or the stored value differs.
+    /// This view never mutates storage.
+    pub fn verify_evidence(env: Env, refund_id: u32, submitter: Address, hash: BytesN<32>) -> bool {
+        let stored: Option<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EvidenceHash(refund_id, submitter));
+        match stored {
+            Some(h) => h == hash,
+            None => false,
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────

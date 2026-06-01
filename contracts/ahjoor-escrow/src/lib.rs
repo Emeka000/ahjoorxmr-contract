@@ -427,6 +427,12 @@ pub enum DataKey2 {
     ReleaseSchedule(u32),
     /// #353: index of the next unclaimed tranche (escrow_id → u32)
     ReleasedIndex(u32),
+    /// #366: timestamp (seconds) when the seller raised a veto on fund release
+    VetoTimestamp(u32),
+    /// #366: admin-configurable window (seconds) before the veto can be overridden (default 48 h)
+    VetoOverrideWindow,
+    /// #366: immutable reason hash stored by admin when overriding a veto
+    VetoReasonHash(u32),
 }
 
 /// #353: A single time-locked tranche in a staged release schedule.
@@ -477,6 +483,8 @@ const DEFAULT_RESOLUTION_COOLING_OFF_SECONDS: u64 = 24 * 60 * 60; // 24 hours
 const DEFAULT_SELLER_TRANSFER_VETO_WINDOW: u32 = 100; // ledgers
 const DEFAULT_AMENDMENT_EXPIRY_SECONDS: u64 = 7 * 24 * 60 * 60; // 7 days
 const DEFAULT_MAX_BOUNTY_REJECTION_ROUNDS: u32 = 3; // #319: max times a bounty can be rejected and re-opened
+/// #366: default admin veto override window — 48 hours
+const DEFAULT_VETO_OVERRIDE_WINDOW_SECONDS: u64 = 48 * 60 * 60;
 
 // ── #319: Bounty Board for Open Competitive Work Assignment ──────────────────
 
@@ -1308,6 +1316,15 @@ impl AhjoorEscrowContract {
 
         if caller != escrow.buyer && caller != escrow.arbiter {
             panic!("Only buyer or arbiter can release escrow");
+        }
+
+        // #366: Block release if seller has raised an active veto
+        let veto_ts: Option<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::VetoTimestamp(escrow_id));
+        if veto_ts.is_some() {
+            panic!("SellerVetoActive: seller has blocked fund release");
         }
 
         Self::require_unlocked(&env, &escrow);
@@ -6604,6 +6621,174 @@ impl AhjoorEscrowContract {
             PERSISTENT_BUMP_AMOUNT,
         );
         events::emit_seller_transfer_approved(&env, escrow_id, proposal.new_seller);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    // ── #366: Seller Veto Override Mechanism ─────────────────────────────────
+
+    /// Admin sets the veto override window in seconds (how long must elapse before admin can override).
+    pub fn set_veto_override_window(env: Env, admin: Address, window_seconds: u64) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can set veto override window");
+        }
+        if window_seconds == 0 {
+            panic!("window_seconds must be positive");
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey2::VetoOverrideWindow, &window_seconds);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Seller raises a veto that blocks fund release from an active escrow.
+    /// Records the veto timestamp for the override window calculation.
+    pub fn raise_seller_veto(env: Env, seller: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        seller.require_auth();
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+        if escrow.seller != seller {
+            panic!("Only the escrow seller can raise a veto");
+        }
+        if !Self::is_open_escrow_status(escrow.status) {
+            panic!("Escrow is not active");
+        }
+        if env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey2::VetoTimestamp(escrow_id))
+            .is_some()
+        {
+            panic!("SellerVetoAlreadyRaised");
+        }
+        let now = env.ledger().timestamp();
+        env.storage()
+            .persistent()
+            .set(&DataKey2::VetoTimestamp(escrow_id), &now);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::VetoTimestamp(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+        events::emit_seller_veto_raised(&env, escrow_id, seller, now);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Seller cancels their veto before the override window elapses, restoring normal flow.
+    pub fn cancel_seller_veto(env: Env, seller: Address, escrow_id: u32) {
+        Self::require_not_paused(&env);
+        seller.require_auth();
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+        if escrow.seller != seller {
+            panic!("Only the escrow seller can cancel a veto");
+        }
+        let veto_ts: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::VetoTimestamp(escrow_id))
+            .expect("No active veto to cancel");
+        let window: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::VetoOverrideWindow)
+            .unwrap_or(DEFAULT_VETO_OVERRIDE_WINDOW_SECONDS);
+        let now = env.ledger().timestamp();
+        if now > veto_ts.saturating_add(window) {
+            panic!("VetoWindowElapsed: override window has passed; only admin can act now");
+        }
+        env.storage()
+            .persistent()
+            .remove(&DataKey2::VetoTimestamp(escrow_id));
+        events::emit_seller_veto_cancelled(&env, escrow_id, seller);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Admin overrides a seller veto after the override window has elapsed.
+    /// Requires no active dispute. Releases funds to buyer and records the reason hash immutably.
+    pub fn override_veto(env: Env, admin: Address, escrow_id: u32, reason_hash: BytesN<32>) {
+        Self::require_not_paused(&env);
+        admin.require_auth();
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+        if admin != stored_admin {
+            panic!("Only admin can override a seller veto");
+        }
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+        // Block if an active dispute exists
+        if escrow.status == EscrowStatus::Disputed || escrow.status == EscrowStatus::PartiallyDisputed {
+            panic!("ActiveDisputeExists: resolve the dispute before overriding veto");
+        }
+        let veto_ts: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::VetoTimestamp(escrow_id))
+            .expect("No active veto to override");
+        let window: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::VetoOverrideWindow)
+            .unwrap_or(DEFAULT_VETO_OVERRIDE_WINDOW_SECONDS);
+        let now = env.ledger().timestamp();
+        if now <= veto_ts.saturating_add(window) {
+            panic!("VetoWindowNotElapsed: override window has not yet passed");
+        }
+        let elapsed = now.saturating_sub(veto_ts);
+        // Store reason hash immutably
+        env.storage()
+            .persistent()
+            .set(&DataKey2::VetoReasonHash(escrow_id), &reason_hash);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::VetoReasonHash(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+        // Remove the veto
+        env.storage()
+            .persistent()
+            .remove(&DataKey2::VetoTimestamp(escrow_id));
+        // Release funds to buyer
+        let token_client = token::Client::new(&env, &escrow.token);
+        let amount = escrow.amount;
+        token_client.transfer(&env.current_contract_address(), &escrow.buyer, &amount);
+        escrow.status = EscrowStatus::Refunded;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Escrow(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+        events::emit_veto_overridden(&env, escrow_id, admin, reason_hash, elapsed);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);

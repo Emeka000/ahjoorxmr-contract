@@ -1884,3 +1884,25 @@ pub fn emit_recurring_payment_cancelled(e: &soroban_sdk::Env, schedule_id: u32, 
         (schedule_id, payer),
     );
 }
+
+// ── #367: Dynamic Settlement Fee Tiers ───────────────────────────────────────
+
+/// Event: Fee tier applied during merchant settlement (#367)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TierFeeApplied {
+    pub merchant: Address,
+    pub tier_fee_bps: u32,
+    pub fee_collected: i128,
+    pub volume_30d: i128,
+}
+
+pub fn emit_tier_fee_applied(
+    e: &Env,
+    merchant: Address,
+    tier_fee_bps: u32,
+    fee_collected: i128,
+    volume_30d: i128,
+) {
+    TierFeeApplied { merchant, tier_fee_bps, fee_collected, volume_30d }.publish(e);
+}
