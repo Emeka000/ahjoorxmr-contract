@@ -1679,3 +1679,81 @@ pub fn emit_milestone_reached(
     MilestoneReached { group_id, member, milestone_pct, reward_amount }.publish(e);
 }
 
+// ── #375: Sealed-Bid (Commit-Reveal) Slot Auction Events ──────────────────────
+
+/// Event: A sealed-bid auction was opened with commit/reveal deadlines.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SealedAuctionOpened {
+    pub group_id: u32,
+    pub round: u32,
+    pub commit_until: u64,
+    pub reveal_until: u64,
+}
+
+/// Event: A sealed bid was committed (hash only; amount stays hidden).
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SlotBidCommitted {
+    pub group_id: u32,
+    pub round: u32,
+    pub bidder: Address,
+}
+
+/// Event: A previously committed sealed bid was revealed and validated.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SlotBidRevealed {
+    pub group_id: u32,
+    pub round: u32,
+    pub bidder: Address,
+    pub desired_slot: u32,
+    pub bid_amount: i128,
+}
+
+/// Event: A sealed-bid auction was settled. `winning_bid` is 0 when no bid
+/// cleared the minimum reserve (slot left unallocated).
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SealedAuctionSettled {
+    pub group_id: u32,
+    pub round: u32,
+    pub winner: Address,
+    pub winning_bid: i128,
+}
+
+pub fn emit_sealed_auction_opened(
+    e: &Env,
+    group_id: u32,
+    round: u32,
+    commit_until: u64,
+    reveal_until: u64,
+) {
+    SealedAuctionOpened { group_id, round, commit_until, reveal_until }.publish(e);
+}
+
+pub fn emit_slot_bid_committed(e: &Env, group_id: u32, round: u32, bidder: Address) {
+    SlotBidCommitted { group_id, round, bidder }.publish(e);
+}
+
+pub fn emit_slot_bid_revealed(
+    e: &Env,
+    group_id: u32,
+    round: u32,
+    bidder: Address,
+    desired_slot: u32,
+    bid_amount: i128,
+) {
+    SlotBidRevealed { group_id, round, bidder, desired_slot, bid_amount }.publish(e);
+}
+
+pub fn emit_sealed_auction_settled(
+    e: &Env,
+    group_id: u32,
+    round: u32,
+    winner: Address,
+    winning_bid: i128,
+) {
+    SealedAuctionSettled { group_id, round, winner, winning_bid }.publish(e);
+}
+

@@ -364,6 +364,13 @@ impl TokenWhitelistContract {
         let mut res = Vec::new(&env);
         for i in start..start + l {
             let t = whitelist.get(i as u32).unwrap();
+        let start = offset;
+        let mut l = limit.min(50);
+        if start >= whitelist.len() { return Vec::new(&env); }
+        if start + l > whitelist.len() { l = whitelist.len() - start; }
+        let mut res = Vec::new(&env);
+        for i in start..(start + l) {
+            let t = whitelist.get(i).unwrap();
             if let Some(md) = env.storage().persistent().get::<_, TokenMetadata>(&DataKey::TokenMetadata(t.clone())) {
                 res.push_back(md);
             }

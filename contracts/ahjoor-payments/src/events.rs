@@ -1028,12 +1028,38 @@ pub struct NotificationKeyRemoved {
     pub merchant: Address,
 }
 
+/// Event: Notification key rotated (#377)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct NotificationKeyRotated {
+    pub merchant: Address,
+    pub old_key_hash: BytesN<32>,
+    pub new_key_hash: BytesN<32>,
+    pub overlap_until: u64,
+}
+
 pub fn emit_notification_key_registered(e: &Env, merchant: Address, key: soroban_sdk::Bytes) {
     NotificationKeyRegistered { merchant, key }.publish(e);
 }
 
 pub fn emit_notification_key_removed(e: &Env, merchant: Address) {
     NotificationKeyRemoved { merchant }.publish(e);
+}
+
+pub fn emit_notification_key_rotated(
+    e: &Env,
+    merchant: Address,
+    old_key_hash: BytesN<32>,
+    new_key_hash: BytesN<32>,
+    overlap_until: u64,
+) {
+    NotificationKeyRotated {
+        merchant,
+        old_key_hash,
+        new_key_hash,
+        overlap_until,
+    }
+    .publish(e);
 }
 
 // --- Token Swap Events ---
@@ -1566,6 +1592,16 @@ pub struct TipReceived {
     pub token: Address,
 }
 
+/// Event: Tip split to beneficiary (#370)
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct TipSplit {
+    pub payment_id: u32,
+    pub beneficiary: Address,
+    pub amount: i128,
+    pub token: Address,
+}
+
 pub fn emit_tip_received(
     e: &Env,
     payment_id: u32,
@@ -1577,6 +1613,22 @@ pub fn emit_tip_received(
         payment_id,
         merchant,
         tip_amount,
+        token,
+    }
+    .publish(e);
+}
+
+pub fn emit_tip_split(
+    e: &Env,
+    payment_id: u32,
+    beneficiary: Address,
+    amount: i128,
+    token: Address,
+) {
+    TipSplit {
+        payment_id,
+        beneficiary,
+        amount,
         token,
     }
     .publish(e);
