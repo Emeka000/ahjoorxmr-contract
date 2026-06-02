@@ -277,15 +277,30 @@ pub enum MerchantStatus {
     Banned = 2,
 }
 
-/// On-chain appeal record for a banned merchant.
+/// Status of a merchant appeal in the reinstatement workflow.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppealStatus {
+    /// Appeal is pending admin review
+    Pending = 0,
+    /// Appeal approved, merchant in cooling-off period
+    ApprovedCoolingOff = 1,
+    /// Appeal approved and cooling-off completed, merchant reinstated
+    ApprovedReinstated = 2,
+    /// Appeal rejected
+    Rejected = 3,
+}
+
+/// On-chain appeal record for a banned merchant with time-locked reinstatement.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MerchantAppeal {
     pub merchant: Address,
-    pub evidence_hash: BytesN<32>,
+    pub reason_hash: BytesN<32>,
     pub submitted_at: u64,
-    pub resolved: bool,
-    pub approved: bool,
+    pub status: AppealStatus,
+    /// Ledger timestamp when cooling-off period ends (0 if not in cooling-off)
+    pub cooling_off_until: u64,
 }
 
 /// KYB (Know Your Business) verification record (#310)
@@ -7180,7 +7195,7 @@ impl AhjoorPaymentsContract {
     }
 
     /// Banned merchant submits an appeal. Only one active appeal per merchant.
-    pub fn submit_appeal(env: Env, merchant: Address, evidence_hash: BytesN<32>) {
+    pub fn submit_appeal(env: Env, merchant: Address, reason_hash: BytesN<32>) {
         Self::require_not_paused(&env);
         merchant.require_auth();
 
@@ -7200,7 +7215,7 @@ impl AhjoorPaymentsContract {
             .persistent()
             .get(&DataKey2::MerchantAppeal(merchant.clone()));
         if let Some(existing) = existing_opt {
-            if !existing.resolved {
+            if existing.status == AppealStatus::Pending || existing.status == AppealStatus::ApprovedCoolingOff {
                 panic!("An active appeal already exists");
             }
         }
@@ -7217,10 +7232,10 @@ impl AhjoorPaymentsContract {
 
         let appeal = MerchantAppeal {
             merchant: merchant.clone(),
-            evidence_hash: evidence_hash.clone(),
+            reason_hash: reason_hash.clone(),
             submitted_at: env.ledger().timestamp(),
-            resolved: false,
-            approved: false,
+            status: AppealStatus::Pending,
+            cooling_off_until: 0,
         };
 
         env.storage()
@@ -7232,14 +7247,14 @@ impl AhjoorPaymentsContract {
             PERSISTENT_BUMP_AMOUNT,
         );
 
-        events::emit_appeal_submitted(&env, merchant, evidence_hash);
+        events::emit_appeal_submitted(&env, merchant, reason_hash);
 
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
-    /// Admin approves an appeal — reinstates the merchant.
+    /// Admin approves an appeal — merchant enters cooling-off period before full reinstatement.
     pub fn approve_appeal(env: Env, admin: Address, merchant: Address) {
         Self::require_not_paused(&env);
         admin.require_auth();
@@ -7258,15 +7273,66 @@ impl AhjoorPaymentsContract {
             .get(&DataKey2::MerchantAppeal(merchant.clone()))
             .expect("No appeal found");
 
-        if appeal.resolved {
-            panic!("Appeal already resolved");
+        if appeal.status != AppealStatus::Pending {
+            panic!("Appeal already resolved or not pending");
         }
 
-        appeal.resolved = true;
-        appeal.approved = true;
+        // Set cooling-off period (default: 7 days in seconds)
+        let cooling_off_period: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey2::AppealRejectionCooldownSeconds)
+            .unwrap_or(7 * 24 * 60 * 60); // Default 7 days
+        let cooling_off_until = env.ledger().timestamp() + cooling_off_period;
+
+        appeal.status = AppealStatus::ApprovedCoolingOff;
+        appeal.cooling_off_until = cooling_off_until;
         env.storage()
             .persistent()
             .set(&DataKey2::MerchantAppeal(merchant.clone()), &appeal);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::MerchantAppeal(merchant.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_appeal_approved(&env, merchant, cooling_off_until);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// Complete reinstatement after cooling-off period has elapsed. Callable by anyone.
+    pub fn complete_reinstatement(env: Env, merchant: Address) {
+        Self::require_not_paused(&env);
+
+        let appeal: MerchantAppeal = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::MerchantAppeal(merchant.clone()))
+            .expect("No appeal found");
+
+        if appeal.status != AppealStatus::ApprovedCoolingOff {
+            panic!("Appeal is not in cooling-off period");
+        }
+
+        let now = env.ledger().timestamp();
+        if now < appeal.cooling_off_until {
+            panic!("Cooling-off period has not elapsed");
+        }
+
+        // Update appeal status
+        let mut updated_appeal = appeal;
+        updated_appeal.status = AppealStatus::ApprovedReinstated;
+        env.storage()
+            .persistent()
+            .set(&DataKey2::MerchantAppeal(merchant.clone()), &updated_appeal);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::MerchantAppeal(merchant.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
 
         // Reinstate merchant
         env.storage().persistent().set(
@@ -7282,11 +7348,7 @@ impl AhjoorPaymentsContract {
             PERSISTENT_BUMP_AMOUNT,
         );
 
-        events::emit_appeal_approved(&env, merchant);
-
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        events::emit_merchant_reinstated(&env, merchant, now);
     }
 
     /// Admin rejects an appeal — merchant remains banned and cooldown is applied.
@@ -7308,34 +7370,30 @@ impl AhjoorPaymentsContract {
             .get(&DataKey2::MerchantAppeal(merchant.clone()))
             .expect("No appeal found");
 
-        if appeal.resolved {
-            panic!("Appeal already resolved");
+        if appeal.status != AppealStatus::Pending {
+            panic!("Appeal already resolved or not pending");
         }
 
-        appeal.resolved = true;
-        appeal.approved = false;
+        appeal.status = AppealStatus::Rejected;
         env.storage()
             .persistent()
             .set(&DataKey2::MerchantAppeal(merchant.clone()), &appeal);
 
-        // Apply cooldown
+        // Apply cooldown for next appeal
         let cooldown_seconds: u64 = env
             .storage()
             .instance()
             .get(&DataKey2::AppealRejectionCooldownSeconds)
-            .unwrap_or(0);
-        if cooldown_seconds > 0 {
-            let cooldown_until = env.ledger().timestamp() + cooldown_seconds;
-            env.storage().persistent().set(
-                &DataKey2::AppealCooldownUntil(merchant.clone()),
-                &cooldown_until,
-            );
-            env.storage().persistent().extend_ttl(
-                &DataKey2::AppealCooldownUntil(merchant.clone()),
-                PERSISTENT_LIFETIME_THRESHOLD,
-                PERSISTENT_BUMP_AMOUNT,
-            );
-        }
+            .unwrap_or(30 * 24 * 60 * 60); // Default 30 days
+        let cooldown_until = env.ledger().timestamp() + cooldown_seconds;
+        env.storage()
+            .persistent()
+            .set(&DataKey2::AppealCooldownUntil(merchant.clone()), &cooldown_until);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::AppealCooldownUntil(merchant.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
 
         events::emit_appeal_rejected(&env, merchant);
 

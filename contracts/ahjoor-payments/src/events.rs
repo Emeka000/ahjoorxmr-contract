@@ -1180,11 +1180,12 @@ pub struct AppealSubmitted {
     pub evidence_hash: BytesN<32>,
 }
 
-/// Event: Admin approved a merchant appeal
+/// Event: Admin approved a merchant appeal — cooling-off period begins
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AppealApproved {
     pub merchant: Address,
+    pub cooling_off_until: u64,
 }
 
 /// Event: Admin rejected a merchant appeal
@@ -1194,18 +1195,16 @@ pub struct AppealRejected {
     pub merchant: Address,
 }
 
-pub fn emit_merchant_suspended(
-    e: &Env,
-    merchant: Address,
-    reason_hash: BytesN<32>,
-    suspension_expires_at: u64,
-) {
-    MerchantSuspended {
-        merchant,
-        reason_hash,
-        suspension_expires_at,
-    }
-    .publish(e);
+/// Event: Merchant fully reinstated after cooling-off period
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MerchantReinstated {
+    pub merchant: Address,
+    pub reinstated_at: u64,
+}
+
+pub fn emit_merchant_suspended(e: &Env, merchant: Address, reason_hash: BytesN<32>, suspension_expires_at: u64) {
+    MerchantSuspended { merchant, reason_hash, suspension_expires_at }.publish(e);
 }
 
 pub fn emit_merchant_banned(e: &Env, merchant: Address, reason_hash: BytesN<32>) {
@@ -1224,8 +1223,12 @@ pub fn emit_appeal_submitted(e: &Env, merchant: Address, evidence_hash: BytesN<3
     .publish(e);
 }
 
-pub fn emit_appeal_approved(e: &Env, merchant: Address) {
-    AppealApproved { merchant }.publish(e);
+pub fn emit_appeal_approved(e: &Env, merchant: Address, cooling_off_until: u64) {
+    AppealApproved { merchant, cooling_off_until }.publish(e);
+}
+
+pub fn emit_merchant_reinstated(e: &Env, merchant: Address, reinstated_at: u64) {
+    MerchantReinstated { merchant, reinstated_at }.publish(e);
 }
 
 pub fn emit_appeal_rejected(e: &Env, merchant: Address) {

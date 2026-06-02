@@ -51,10 +51,10 @@ fn test_suspension_blocks_payments() {
 }
 
 // ---------------------------------------------------------------------------
-// Test: ban + appeal + approval path
+// Test: ban + appeal + approval with cooling-off period
 // ---------------------------------------------------------------------------
 #[test]
-fn test_ban_appeal_approval() {
+fn test_ban_appeal_approval_with_cooling_off() {
     let (env, client, admin, merchant, _token_addr, _token_client, _token_admin_client) = setup_ban();
 
     client.approve_merchant(&merchant);
@@ -64,15 +64,32 @@ fn test_ban_appeal_approval() {
     // Merchant submits appeal
     client.submit_appeal(&merchant, &make_hash(&env, 3));
     let appeal = client.get_merchant_appeal(&merchant).unwrap();
-    assert!(!appeal.resolved);
+    assert_eq!(appeal.status, AppealStatus::Pending);
+    assert_eq!(appeal.cooling_off_until, 0u64);
 
-    // Admin approves
+    // Admin approves - merchant enters cooling-off period
     client.approve_appeal(&admin, &merchant);
+    
+    // Merchant is still banned during cooling-off
+    assert_eq!(client.get_merchant_status(&merchant), MerchantStatus::Banned);
+
+    let appeal = client.get_merchant_appeal(&merchant).unwrap();
+    assert_eq!(appeal.status, AppealStatus::ApprovedCoolingOff);
+    assert!(appeal.cooling_off_until > 0);
+
+    // Try to complete reinstatement before cooling-off expires - should fail
+    let result = client.try_complete_reinstatement(&merchant);
+    assert!(result.is_err());
+
+    // Advance past cooling-off period (default 7 days = 604800 seconds)
+    env.ledger().with_mut(|l| l.timestamp += 604801);
+
+    // Now complete reinstatement should succeed
+    client.complete_reinstatement(&merchant);
     assert_eq!(client.get_merchant_status(&merchant), MerchantStatus::Active);
 
     let appeal = client.get_merchant_appeal(&merchant).unwrap();
-    assert!(appeal.resolved);
-    assert!(appeal.approved);
+    assert_eq!(appeal.status, AppealStatus::ApprovedReinstated);
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +121,7 @@ fn test_ban_appeal_rejection_cooldown() {
     // Now appeal is allowed
     client.submit_appeal(&merchant, &make_hash(&env, 7));
     let appeal = client.get_merchant_appeal(&merchant).unwrap();
-    assert!(!appeal.resolved);
+    assert_eq!(appeal.status, AppealStatus::Pending);
 }
 
 // ---------------------------------------------------------------------------
@@ -137,4 +154,131 @@ fn test_reinstate_merchant() {
     client.reinstate_merchant(&admin, &merchant);
     assert_eq!(client.get_merchant_status(&merchant), MerchantStatus::Active);
     assert!(client.is_merchant_approved(&merchant));
+}
+
+// ---------------------------------------------------------------------------
+// Test: only banned merchant can submit appeal
+// ---------------------------------------------------------------------------
+#[test]
+#[should_panic(expected = "Only banned merchants can submit an appeal")]
+fn test_non_banned_merchant_cannot_appeal() {
+    let (_env, client, _admin, merchant, _token_addr, _token_client, _token_admin_client) = setup_ban();
+
+    client.approve_merchant(&merchant);
+    // Merchant is active, not banned - should fail
+    client.submit_appeal(&merchant, &make_hash(&_env, 12));
+}
+
+// ---------------------------------------------------------------------------
+// Test: cooling-off period is enforced
+// ---------------------------------------------------------------------------
+#[test]
+#[should_panic(expected = "Cooling-off period has not elapsed")]
+fn test_cooling_off_period_enforced() {
+    let (env, client, admin, merchant, _token_addr, _token_client, _token_admin_client) = setup_ban();
+
+    client.approve_merchant(&merchant);
+    client.ban_merchant(&admin, &merchant, &make_hash(&env, 13));
+    client.submit_appeal(&merchant, &make_hash(&env, 14));
+    client.approve_appeal(&admin, &merchant);
+
+    // Try to complete reinstatement immediately - should panic
+    client.complete_reinstatement(&merchant);
+}
+
+// ---------------------------------------------------------------------------
+// Test: appeal status transitions correctly
+// ---------------------------------------------------------------------------
+#[test]
+fn test_appeal_status_transitions() {
+    let (env, client, admin, merchant, _token_addr, _token_client, _token_admin_client) = setup_ban();
+
+    client.approve_merchant(&merchant);
+    client.ban_merchant(&admin, &merchant, &make_hash(&env, 15));
+
+    // Initial state: no appeal
+    assert!(client.get_merchant_appeal(&merchant).is_none());
+
+    // Submit appeal
+    client.submit_appeal(&merchant, &make_hash(&env, 16));
+    let appeal = client.get_merchant_appeal(&merchant).unwrap();
+    assert_eq!(appeal.status, AppealStatus::Pending);
+
+    // Approve appeal
+    client.approve_appeal(&admin, &merchant);
+    let appeal = client.get_merchant_appeal(&merchant).unwrap();
+    assert_eq!(appeal.status, AppealStatus::ApprovedCoolingOff);
+
+    // After cooling-off period
+    env.ledger().with_mut(|l| l.timestamp += 604801);
+    client.complete_reinstatement(&merchant);
+    let appeal = client.get_merchant_appeal(&merchant).unwrap();
+    assert_eq!(appeal.status, AppealStatus::ApprovedReinstated);
+}
+
+// ---------------------------------------------------------------------------
+// Test: rejected appeal status
+// ---------------------------------------------------------------------------
+#[test]
+fn test_rejected_appeal_status() {
+    let (env, client, admin, merchant, _token_addr, _token_client, _token_admin_client) = setup_ban();
+
+    client.approve_merchant(&merchant);
+    client.ban_merchant(&admin, &merchant, &make_hash(&env, 17));
+    client.submit_appeal(&merchant, &make_hash(&env, 18));
+    client.reject_appeal(&admin, &merchant);
+
+    let appeal = client.get_merchant_appeal(&merchant).unwrap();
+    assert_eq!(appeal.status, AppealStatus::Rejected);
+}
+
+// ---------------------------------------------------------------------------
+// Test: cannot approve already resolved appeal
+// ---------------------------------------------------------------------------
+#[test]
+#[should_panic(expected = "Appeal already resolved or not pending")]
+fn test_cannot_approve_resolved_appeal() {
+    let (env, client, admin, merchant, _token_addr, _token_client, _token_admin_client) = setup_ban();
+
+    client.approve_merchant(&merchant);
+    client.ban_merchant(&admin, &merchant, &make_hash(&env, 19));
+    client.submit_appeal(&merchant, &make_hash(&env, 20));
+    client.approve_appeal(&admin, &merchant);
+
+    // Try to approve again - should fail
+    client.approve_appeal(&admin, &merchant);
+}
+
+// ---------------------------------------------------------------------------
+// Test: cannot reject already resolved appeal
+// ---------------------------------------------------------------------------
+#[test]
+#[should_panic(expected = "Appeal already resolved or not pending")]
+fn test_cannot_reject_resolved_appeal() {
+    let (env, client, admin, merchant, _token_addr, _token_client, _token_admin_client) = setup_ban();
+
+    client.approve_merchant(&merchant);
+    client.ban_merchant(&admin, &merchant, &make_hash(&env, 21));
+    client.submit_appeal(&merchant, &make_hash(&env, 22));
+    client.reject_appeal(&admin, &merchant);
+
+    // Try to reject again - should fail
+    client.reject_appeal(&admin, &merchant);
+}
+
+// ---------------------------------------------------------------------------
+// Test: cannot submit second appeal while in cooling-off
+// ---------------------------------------------------------------------------
+#[test]
+#[should_panic(expected = "An active appeal already exists")]
+fn test_cannot_appeal_during_cooling_off() {
+    let (env, client, admin, merchant, _token_addr, _token_client, _token_admin_client) = setup_ban();
+
+    client.approve_merchant(&merchant);
+    client.ban_merchant(&admin, &merchant, &make_hash(&env, 23));
+    client.submit_appeal(&merchant, &make_hash(&env, 24));
+    client.approve_appeal(&admin, &merchant);
+
+    // Try to submit another appeal during cooling-off - should fail
+    client.submit_appeal(&merchant, &make_hash(&env, 25));
 }
