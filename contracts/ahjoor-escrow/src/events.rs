@@ -1735,3 +1735,110 @@ pub fn emit_veto_overridden(
 ) {
     VetoOverridden { escrow_id, admin, reason_hash, elapsed_seconds }.publish(e);
 }
+
+// ── #376: Bounty Board Milestone Gating Events ───────────────────────────────
+
+/// Event: A milestone-gated bounty was created.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BountyMilestoneCreated {
+    pub escrow_id: u32,
+    pub buyer: Address,
+    pub milestone_count: u32,
+    pub total_amount: i128,
+}
+
+/// Event: A bounty milestone deliverable was submitted by the solver.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BountyMilestoneSubmitted {
+    pub escrow_id: u32,
+    pub index: u32,
+    pub solver: Address,
+    pub deliverable_hash: BytesN<32>,
+}
+
+/// Event: A bounty milestone was verified by its designated verifier and the
+/// corresponding tranche released to the solver.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MilestoneVerified {
+    pub escrow_id: u32,
+    pub index: u32,
+    pub amount: i128,
+    pub verifier: Address,
+}
+
+/// Event: The designated verifier for a still-pending milestone was replaced.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct BountyMilestoneVerifierReplaced {
+    pub escrow_id: u32,
+    pub index: u32,
+    pub old_verifier: Address,
+    pub new_verifier: Address,
+}
+
+pub fn emit_bounty_milestone_created(
+    e: &Env,
+    escrow_id: u32,
+    buyer: Address,
+    milestone_count: u32,
+    total_amount: i128,
+) {
+    BountyMilestoneCreated {
+        escrow_id,
+        buyer,
+        milestone_count,
+        total_amount,
+    }
+    .publish(e);
+}
+
+pub fn emit_bounty_milestone_submitted(
+    e: &Env,
+    escrow_id: u32,
+    index: u32,
+    solver: Address,
+    deliverable_hash: BytesN<32>,
+) {
+    BountyMilestoneSubmitted {
+        escrow_id,
+        index,
+        solver,
+        deliverable_hash,
+    }
+    .publish(e);
+}
+
+pub fn emit_milestone_verified(
+    e: &Env,
+    escrow_id: u32,
+    index: u32,
+    amount: i128,
+    verifier: Address,
+) {
+    MilestoneVerified {
+        escrow_id,
+        index,
+        amount,
+        verifier,
+    }
+    .publish(e);
+}
+
+pub fn emit_bounty_milestone_verifier_replaced(
+    e: &Env,
+    escrow_id: u32,
+    index: u32,
+    old_verifier: Address,
+    new_verifier: Address,
+) {
+    BountyMilestoneVerifierReplaced {
+        escrow_id,
+        index,
+        old_verifier,
+        new_verifier,
+    }
+    .publish(e);
+}

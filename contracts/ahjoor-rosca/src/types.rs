@@ -349,6 +349,11 @@ pub enum DataKey3 {
     SavingsRewardPool,       // i128 — token balance held for savings goal milestone rewards
     // #359: Per-member milestone claim bitmask (goal_id, member) → u64 bitmask
     SavingsMilestonesClaimed(u32, Address), // (goal_id, member) → u64
+    // #375: Sealed-bid (commit-reveal) slot auction
+    SealedAuction,             // SealedAuctionState — config + current phase state
+    SlotBidCommit(u32, Address), // (round, bidder) → SealedCommit
+    SealedCommitters(u32),     // (round) → Vec<Address> — everyone who committed this round
+    SealedRevealedBids(u32),   // (round) → Vec<SlotBid> — valid revealed bids this round
 }
 
 // ── #330: Contribution Delegation ────────────────────────────────────────────
@@ -649,6 +654,45 @@ pub struct SlotBid {
     pub amount: i128,
     /// Ledger timestamp at which the bid was placed (used for tie-breaking).
     pub placed_at: u64,
+}
+
+// ── #375: Sealed-Bid (Commit-Reveal) Slot Auction ─────────────────────────────
+
+/// #375: Configuration and live phase state for a commit-reveal sealed-bid
+/// slot auction. A single struct keeps the auction's tunables and the current
+/// phase deadlines together under one storage key.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SealedAuctionState {
+    /// Whether sealed-bid auctions are enabled for this group.
+    pub enabled: bool,
+    /// Duration (seconds) of the commit phase once an auction is opened.
+    pub commit_duration: u64,
+    /// Duration (seconds) of the reveal phase that follows the commit phase.
+    pub reveal_duration: u64,
+    /// Minimum reserve price; the winning bid must strictly exceed this.
+    pub min_reserve: i128,
+    /// Round this auction targets (meaningful only while `open`).
+    pub round: u32,
+    /// Timestamp at which the commit phase closes.
+    pub commit_until: u64,
+    /// Timestamp at which the reveal phase closes.
+    pub reveal_until: u64,
+    /// Whether an auction is currently open (awaiting settlement).
+    pub open: bool,
+}
+
+/// #375: A stored commitment for a single sealed bid.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SealedCommit {
+    /// sha256(bid_amount.to_be_bytes() || salt) committed during the commit phase.
+    pub commit_hash: BytesN<32>,
+    /// Collateral deposited at commit time; also the upper bound on the bid the
+    /// bidder may later reveal.
+    pub deposit: i128,
+    /// Whether this commitment has already been revealed.
+    pub revealed: bool,
 }
 
 // ── Cross-Group Member Migration ───────────────────────────────────────────────

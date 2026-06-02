@@ -441,6 +441,8 @@ pub enum DataKey2 {
     InspectorScoreValueThreshold,
     /// #357: tracks whether the inspector ruling for an escrow has been appealed (escrow_id → bool)
     InspectorRulingAppealed(u32),
+    /// #376: ordered milestone schedule for a milestone-gated bounty (escrow_id → Vec<BountyMilestone>)
+    BountyMilestones(u32),
 }
 
 /// #357: On-chain reputation record for an inspector.
@@ -520,6 +522,50 @@ pub struct BountyData {
     pub submission_hash: Option<BytesN<32>>,
     /// Number of times this bounty has been rejected and re-opened.
     pub rejection_count: u32,
+}
+
+// ── #376: Bounty Board Milestone Gating with Verifier Sign-Off Chain ─────────
+
+/// #376: Verification status of a single milestone in a milestone-gated bounty.
+#[contracttype]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BountyMilestoneStatus {
+    /// Awaiting deliverable submission from the solver.
+    Pending = 0,
+    /// Deliverable submitted; awaiting the designated verifier's sign-off.
+    Submitted = 1,
+    /// Verifier signed off; tranche transfer in progress.
+    Verified = 2,
+    /// Tranche has been released to the solver.
+    Paid = 3,
+}
+
+/// #376: Input describing one milestone when creating a milestone-gated bounty.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BountyMilestoneInput {
+    /// Hash of the sub-deliverable description/requirements.
+    pub description_hash: BytesN<32>,
+    /// Address authorized to verify (sign off) this milestone.
+    pub verifier: Address,
+    /// Token amount released to the solver when this milestone is verified.
+    pub amount: i128,
+}
+
+/// #376: On-chain state for a single milestone of a milestone-gated bounty.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BountyMilestone {
+    /// Hash of the sub-deliverable description/requirements.
+    pub description_hash: BytesN<32>,
+    /// Address authorized to verify (sign off) this milestone.
+    pub verifier: Address,
+    /// Token amount released to the solver when this milestone is verified.
+    pub amount: i128,
+    /// Current verification status of this milestone.
+    pub status: BountyMilestoneStatus,
+    /// Hash of the deliverable submitted by the solver (None until submitted).
+    pub deliverable_hash: Option<BytesN<32>>,
 }
 
 /// Auto-renewal configuration for recurring service agreements.
@@ -5402,6 +5448,405 @@ impl AhjoorEscrowContract {
             .get(&DataKey2::BountyData(escrow_id))
     }
 
+    // ── #376: Bounty Board Milestone Gating with Verifier Sign-Off Chain ──────
+
+    /// #376: Create a milestone-gated bounty. The buyer funds the full sum of
+    /// all milestone amounts up front. Each milestone is released to the solver
+    /// only after its designated verifier signs off, and milestones must be
+    /// completed strictly in order (milestone N+1 cannot be submitted until
+    /// milestone N has been verified and paid). Any whitelisted solver may
+    /// claim it via the standard `claim_bounty` flow.
+    pub fn create_milestone_bounty(
+        env: Env,
+        buyer: Address,
+        token: Address,
+        milestones: Vec<BountyMilestoneInput>,
+        claim_deadline_ledger: u64,
+        submission_deadline_ledger: u64,
+    ) -> u32 {
+        Self::require_not_paused(&env);
+        buyer.require_auth();
+
+        if milestones.is_empty() {
+            panic!("Bounty must have at least one milestone");
+        }
+
+        let current_time = env.ledger().timestamp();
+        if claim_deadline_ledger <= current_time {
+            panic!("Claim deadline must be in the future");
+        }
+        if submission_deadline_ledger <= claim_deadline_ledger {
+            panic!("Submission deadline must be after claim deadline");
+        }
+
+        // Validate milestone amounts and compute the total escrow amount.
+        let mut total_amount: i128 = 0;
+        for m in milestones.iter() {
+            if m.amount <= 0 {
+                panic!("Milestone amount must be positive");
+            }
+            total_amount += m.amount;
+        }
+
+        // Check token whitelist if configured.
+        if let Some(whitelist_addr) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::TokenWhitelistContract)
+        {
+            let whitelist_client = TokenWhitelistClient::new(&env, &whitelist_addr);
+            if !whitelist_client.is_whitelisted(&token) {
+                panic!("Token not whitelisted");
+            }
+        }
+
+        // Transfer the full bounty amount from buyer to contract.
+        let token_client = token::Client::new(&env, &token);
+        token_client.transfer(&buyer, &env.current_contract_address(), &total_amount);
+
+        // Allocate escrow id.
+        let escrow_id = env
+            .storage()
+            .instance()
+            .get(&DataKey::EscrowCounter)
+            .unwrap_or(0u32)
+            + 1;
+        env.storage()
+            .instance()
+            .set(&DataKey::EscrowCounter, &escrow_id);
+
+        let first_hash = milestones.get(0).unwrap().description_hash.clone();
+
+        let escrow = Escrow {
+            id: escrow_id,
+            buyer: buyer.clone(),
+            seller: env.current_contract_address(), // Placeholder until claimed
+            arbiter: env.current_contract_address(), // No arbiter for bounties
+            amount: total_amount,
+            original_amount: total_amount,
+            token: token.clone(),
+            status: EscrowStatus::BountyUnclaimed,
+            created_at: current_time,
+            deadline: submission_deadline_ledger,
+            metadata_hash: Some(first_hash),
+            sellers: Vec::new(&env),
+            extensions: EscrowExtensions {
+                auto_renew: false,
+                renewal_count: 0,
+                renewals_remaining: 0,
+                dispute_timeout_seconds: None,
+                buyer_inactivity_secs: 0,
+                min_lock_until: None,
+                release_base: None,
+                release_quote: None,
+                release_comparison: None,
+                release_threshold_price: None,
+                arbiter_fee_bps: None,
+                dispute_default_winner: None,
+                required_collateral_bps: 0,
+                collateral_forfeit_bps: 0,
+                collateral_deposit_deadline: 0,
+                collateral_amount: 0,
+                delivery_proof_hash: None,
+                inspector: None,
+                auto_renew_config: None,
+                renewals_completed: 0,
+            },
+            top_up_history: Vec::new(&env),
+            top_up_acknowledged: false,
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::Escrow(escrow_id), &escrow);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Escrow(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        // Store bounty metadata so the standard claim flow (claim_bounty) applies.
+        let bounty_data = BountyData {
+            description_hash: milestones.get(0).unwrap().description_hash.clone(),
+            claim_deadline_ledger,
+            submission_deadline_ledger,
+            solver: None,
+            submission_hash: None,
+            rejection_count: 0,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey2::BountyData(escrow_id), &bounty_data);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::BountyData(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        // Build and store the ordered milestone schedule, all Pending.
+        let mut states: Vec<BountyMilestone> = Vec::new(&env);
+        for m in milestones.iter() {
+            states.push_back(BountyMilestone {
+                description_hash: m.description_hash.clone(),
+                verifier: m.verifier.clone(),
+                amount: m.amount,
+                status: BountyMilestoneStatus::Pending,
+                deliverable_hash: None,
+            });
+        }
+        let milestone_count = states.len();
+        env.storage()
+            .persistent()
+            .set(&DataKey2::BountyMilestones(escrow_id), &states);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::BountyMilestones(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_bounty_milestone_created(&env, escrow_id, buyer, milestone_count, total_amount);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        escrow_id
+    }
+
+    /// #376: Submit a deliverable for a specific milestone. Callable only by the
+    /// solver who claimed the bounty. Milestones must be submitted in order:
+    /// milestone `index` cannot be submitted until every earlier milestone has
+    /// been verified and paid.
+    pub fn submit_bounty_milestone(
+        env: Env,
+        solver: Address,
+        escrow_id: u32,
+        index: u32,
+        deliverable_hash: BytesN<32>,
+    ) {
+        Self::require_not_paused(&env);
+        solver.require_auth();
+
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if escrow.status != EscrowStatus::BountyClaimed {
+            panic!("Bounty is not in claimed status");
+        }
+        if escrow.seller != solver {
+            panic!("Only the assigned solver can submit milestones");
+        }
+
+        let current_time = env.ledger().timestamp();
+        if current_time > escrow.deadline {
+            panic!("Submission deadline has passed");
+        }
+
+        let mut states: Vec<BountyMilestone> = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::BountyMilestones(escrow_id))
+            .expect("No milestones for this bounty");
+
+        if index >= states.len() {
+            panic!("Milestone index out of range");
+        }
+
+        // Enforce strict ordering: all earlier milestones must already be paid.
+        let mut i: u32 = 0;
+        while i < index {
+            if states.get(i).unwrap().status != BountyMilestoneStatus::Paid {
+                panic!("Previous milestone not yet verified");
+            }
+            i += 1;
+        }
+
+        let mut milestone = states.get(index).unwrap();
+        if milestone.status != BountyMilestoneStatus::Pending {
+            panic!("Milestone is not awaiting submission");
+        }
+
+        milestone.status = BountyMilestoneStatus::Submitted;
+        milestone.deliverable_hash = Some(deliverable_hash.clone());
+        states.set(index, milestone);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::BountyMilestones(escrow_id), &states);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::BountyMilestones(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_bounty_milestone_submitted(&env, escrow_id, index, solver, deliverable_hash);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// #376: Verify (sign off) a submitted milestone. Callable only by the
+    /// milestone's designated verifier. On success the milestone's tranche is
+    /// transferred to the solver and the milestone is marked Paid; once every
+    /// milestone is paid the escrow is marked Released.
+    pub fn verify_bounty_milestone(env: Env, escrow_id: u32, index: u32) {
+        Self::require_not_paused(&env);
+
+        let mut escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if escrow.status != EscrowStatus::BountyClaimed {
+            panic!("Bounty is not in claimed status");
+        }
+
+        let mut states: Vec<BountyMilestone> = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::BountyMilestones(escrow_id))
+            .expect("No milestones for this bounty");
+
+        if index >= states.len() {
+            panic!("Milestone index out of range");
+        }
+
+        let mut milestone = states.get(index).unwrap();
+
+        // Only the designated verifier for THIS milestone may sign off.
+        milestone.verifier.require_auth();
+
+        if milestone.status != BountyMilestoneStatus::Submitted {
+            panic!("Milestone is not awaiting verification");
+        }
+
+        // Mark verified, then release the tranche to the solver.
+        milestone.status = BountyMilestoneStatus::Verified;
+        let amount = milestone.amount;
+        let verifier = milestone.verifier.clone();
+        let solver = escrow.seller.clone();
+
+        let token_client = token::Client::new(&env, &escrow.token);
+        token_client.transfer(&env.current_contract_address(), &solver, &amount);
+
+        milestone.status = BountyMilestoneStatus::Paid;
+        states.set(index, milestone);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::BountyMilestones(escrow_id), &states);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::BountyMilestones(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_milestone_verified(&env, escrow_id, index, amount, verifier);
+
+        // If every milestone is paid, the bounty is fully settled.
+        let mut all_paid = true;
+        let mut j: u32 = 0;
+        while j < states.len() {
+            if states.get(j).unwrap().status != BountyMilestoneStatus::Paid {
+                all_paid = false;
+                break;
+            }
+            j += 1;
+        }
+        if all_paid {
+            escrow.status = EscrowStatus::Released;
+            env.storage()
+                .persistent()
+                .set(&DataKey::Escrow(escrow_id), &escrow);
+            env.storage().persistent().extend_ttl(
+                &DataKey::Escrow(escrow_id),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+        }
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// #376: Replace the designated verifier for a milestone. Callable only by
+    /// the bounty creator (buyer), and only before the milestone has been
+    /// submitted (i.e. while it is still Pending).
+    pub fn replace_bounty_milestone_verifier(
+        env: Env,
+        buyer: Address,
+        escrow_id: u32,
+        index: u32,
+        new_verifier: Address,
+    ) {
+        Self::require_not_paused(&env);
+        buyer.require_auth();
+
+        let escrow: Escrow = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Escrow(escrow_id))
+            .expect("Escrow not found");
+
+        if escrow.buyer != buyer {
+            panic!("Only the bounty creator can replace a verifier");
+        }
+
+        let mut states: Vec<BountyMilestone> = env
+            .storage()
+            .persistent()
+            .get(&DataKey2::BountyMilestones(escrow_id))
+            .expect("No milestones for this bounty");
+
+        if index >= states.len() {
+            panic!("Milestone index out of range");
+        }
+
+        let mut milestone = states.get(index).unwrap();
+        if milestone.status != BountyMilestoneStatus::Pending {
+            panic!("Verifier can only be replaced before the milestone is submitted");
+        }
+
+        let old_verifier = milestone.verifier.clone();
+        milestone.verifier = new_verifier.clone();
+        states.set(index, milestone);
+
+        env.storage()
+            .persistent()
+            .set(&DataKey2::BountyMilestones(escrow_id), &states);
+        env.storage().persistent().extend_ttl(
+            &DataKey2::BountyMilestones(escrow_id),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+
+        events::emit_bounty_milestone_verifier_replaced(
+            &env,
+            escrow_id,
+            index,
+            old_verifier,
+            new_verifier,
+        );
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    /// #376: Read the milestone schedule for a milestone-gated bounty.
+    pub fn get_bounty_milestones(env: Env, escrow_id: u32) -> Vec<BountyMilestone> {
+        env.storage()
+            .persistent()
+            .get(&DataKey2::BountyMilestones(escrow_id))
+            .expect("No milestones for this bounty")
+    }
+
     // ── #361: Collateral Top-Up Mechanism ────────────────────────────────────
 
     /// Configure collateral health monitoring for an escrow.
@@ -7350,3 +7795,5 @@ mod test_inspector;
 mod test_milestone_bps;
 #[cfg(test)]
 mod test_bounty_board;
+#[cfg(test)]
+mod test_bounty_milestone;
