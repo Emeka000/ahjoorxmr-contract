@@ -14,6 +14,22 @@ const SETTLEMENT_BATCH_COUNTER_KEY: &str = "settlement_batch_counter";
 const PAYMENT_COUNTER_KEY: &str = "payment_counter";
 const MERCHANT_CONVERSION_RATES_KEY_PREFIX: &str = "merchant_rates_";
 
+fn invoice_key(env: &Env, id: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "invoice"), id)
+}
+fn inv_payment_key(env: &Env, id: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "inv_payment"), id)
+}
+fn settle_batch_key(env: &Env, id: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "settle_batch"), id)
+}
+fn cross_settle_key(env: &Env, id: u32) -> (Symbol, u32) {
+    (Symbol::new(env, "cross_settle"), id)
+}
+fn merch_rates_key(env: &Env, merchant: &Address) -> (Symbol, Address) {
+    (Symbol::new(env, "merch_rates"), merchant.clone())
+}
+
 /// Implementation of multi-token invoice functionality
 pub struct MultiTokenInvoiceImpl;
 
@@ -115,7 +131,7 @@ impl MultiTokenInvoiceImpl {
         };
 
         // Store invoice
-        let key = Symbol::new(env, &format!("{}{}", INVOICE_KEY_PREFIX, next_id));
+        let key = invoice_key(env, next_id);
         env.storage().persistent().set(&key, &invoice);
         env.storage()
             .instance()
@@ -139,7 +155,7 @@ impl MultiTokenInvoiceImpl {
         }
 
         // Get invoice
-        let key = Symbol::new(env, &format!("{}{}", INVOICE_KEY_PREFIX, invoice_id));
+        let key = invoice_key(env, invoice_id);
         let mut invoice: MultiTokenInvoice = env
             .storage()
             .persistent()
@@ -239,10 +255,7 @@ impl MultiTokenInvoiceImpl {
         };
 
         // Store payment
-        let payment_key = Symbol::new(
-            env,
-            &format!("{}{}", INVOICE_PAYMENT_KEY_PREFIX, next_payment_id),
-        );
+        let payment_key = inv_payment_key(env, next_payment_id);
         env.storage().persistent().set(&payment_key, &payment);
 
         // Store updated invoice
@@ -267,7 +280,7 @@ impl MultiTokenInvoiceImpl {
             panic_with_error!(env, MultiTokenInvoiceError::InvalidConversionRate);
         }
 
-        let key = Symbol::new(env, &format!("{}{}", MERCHANT_CONVERSION_RATES_KEY_PREFIX, merchant));
+        let key = merch_rates_key(env, &merchant);
         let mut rates: Map<Address, i128> = env
             .storage()
             .persistent()
@@ -291,7 +304,7 @@ impl MultiTokenInvoiceImpl {
             panic_with_error!(env, MultiTokenInvoiceError::InvalidConversionRate);
         }
 
-        let key = Symbol::new(env, &format!("{}{}", INVOICE_KEY_PREFIX, invoice_id));
+        let key = invoice_key(env, invoice_id);
         let mut invoice: MultiTokenInvoice = env
             .storage()
             .persistent()
@@ -308,7 +321,7 @@ impl MultiTokenInvoiceImpl {
 
     /// Get invoice details
     pub fn get_invoice(env: &Env, invoice_id: u32) -> Option<MultiTokenInvoice> {
-        let key = Symbol::new(env, &format!("{}{}", INVOICE_KEY_PREFIX, invoice_id));
+        let key = invoice_key(env, invoice_id);
         env.storage().persistent().get(&key)
     }
 
@@ -336,7 +349,7 @@ impl MultiTokenInvoiceImpl {
         let mut total_settlement_amount: i128 = 0;
 
         for invoice_id in invoice_ids.iter() {
-            let key = Symbol::new(env, &format!("{}{}", INVOICE_KEY_PREFIX, invoice_id));
+            let key = invoice_key(env, invoice_id);
             let invoice: MultiTokenInvoice = env
                 .storage()
                 .persistent()
@@ -379,10 +392,7 @@ impl MultiTokenInvoiceImpl {
         };
 
         // Store batch
-        let batch_key = Symbol::new(
-            env,
-            &format!("{}{}", SETTLEMENT_BATCH_KEY_PREFIX, next_batch_id),
-        );
+        let batch_key = settle_batch_key(env, next_batch_id);
         env.storage().persistent().set(&batch_key, &batch);
         env.storage()
             .instance()
@@ -393,13 +403,13 @@ impl MultiTokenInvoiceImpl {
 
     /// Get settlement batch details
     pub fn get_settlement_batch(env: &Env, batch_id: u32) -> Option<SettlementBatch> {
-        let key = Symbol::new(env, &format!("{}{}", SETTLEMENT_BATCH_KEY_PREFIX, batch_id));
+        let key = settle_batch_key(env, batch_id);
         env.storage().persistent().get(&key)
     }
 
     /// Cancel an invoice
     pub fn cancel_invoice(env: &Env, invoice_id: u32) {
-        let key = Symbol::new(env, &format!("{}{}", INVOICE_KEY_PREFIX, invoice_id));
+        let key = invoice_key(env, invoice_id);
         let mut invoice: MultiTokenInvoice = env
             .storage()
             .persistent()
@@ -414,7 +424,7 @@ impl MultiTokenInvoiceImpl {
 
     /// Get invoice status
     pub fn get_invoice_status(env: &Env, invoice_id: u32) -> InvoiceStatus {
-        let key = Symbol::new(env, &format!("{}{}", INVOICE_KEY_PREFIX, invoice_id));
+        let key = invoice_key(env, invoice_id);
         let invoice: MultiTokenInvoice = env
             .storage()
             .persistent()
@@ -449,7 +459,7 @@ impl MultiTokenInvoiceImpl {
             panic_with_error!(env, MultiTokenInvoiceError::InvalidLineItem);
         }
 
-        let key = Symbol::new(env, &format!("{}{}", INVOICE_KEY_PREFIX, invoice_id));
+        let key = invoice_key(env, invoice_id);
         let mut invoice: MultiTokenInvoice = env
             .storage()
             .persistent()
@@ -534,7 +544,7 @@ impl MultiTokenInvoiceImpl {
 
         // Transfer payment_token from payer to contract
         let token_client = token::Client::new(env, &payment_token);
-        token_client.transfer(payer.as_ref(), &env.current_contract_address(), &payment_amount);
+        token_client.transfer(&payer, &env.current_contract_address(), &payment_amount);
 
         invoice.payments_received.set(payment_token.clone(), new_paid);
 
@@ -573,10 +583,7 @@ impl MultiTokenInvoiceImpl {
             tx_hash: BytesN::from_array(env, &[0u8; 32]),
         };
 
-        let payment_key = Symbol::new(
-            env,
-            &format!("{}{}", INVOICE_PAYMENT_KEY_PREFIX, next_payment_id),
-        );
+        let payment_key = inv_payment_key(env, next_payment_id);
         env.storage().persistent().set(&payment_key, &payment);
         env.storage().persistent().set(&key, &invoice);
         env.storage()
@@ -584,10 +591,7 @@ impl MultiTokenInvoiceImpl {
             .set(&Symbol::new(env, PAYMENT_COUNTER_KEY), &next_payment_id);
 
         // Store cross-token settlement record
-        let settlement_key = Symbol::new(
-            env,
-            &format!("cross_settlement_{}", invoice_id),
-        );
+        let settlement_key = cross_settle_key(env, invoice_id);
         let settlement_record = CrossTokenSettlementRecord {
             invoice_id,
             paid_token: payment_token.clone(),
@@ -616,7 +620,7 @@ impl MultiTokenInvoiceImpl {
 
     /// Get remaining balance for an invoice
     pub fn get_invoice_balance(env: &Env, invoice_id: u32) -> i128 {
-        let key = Symbol::new(env, &format!("{}{}", INVOICE_KEY_PREFIX, invoice_id));
+        let key = invoice_key(env, invoice_id);
         let invoice: MultiTokenInvoice = env
             .storage()
             .persistent()

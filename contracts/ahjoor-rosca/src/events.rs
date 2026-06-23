@@ -1489,31 +1489,19 @@ pub struct TreasuryPaymentExecuted {
 
 
 pub fn emit_treasury_enabled(env: &Env, treasury_admin: Address) {
-    env.events().publish(
-        ("ahjoor", "treasury_enabled"),
-        TreasuryEnabled { group_id: 0, treasury_admin },
-    );
+    TreasuryEnabled { group_id: 0, treasury_admin }.publish(env);
 }
 
 pub fn emit_treasury_round_proposed(env: &Env, round_index: u32) {
-    env.events().publish(
-        ("ahjoor", "treasury_round_proposed"),
-        TreasuryRoundProposed { group_id: 0, round_index },
-    );
+    TreasuryRoundProposed { group_id: 0, round_index }.publish(env);
 }
 
 pub fn emit_treasury_round_confirmed(env: &Env, round_index: u32) {
-    env.events().publish(
-        ("ahjoor", "treasury_round_confirmed"),
-        TreasuryRoundConfirmed { group_id: 0, round_index },
-    );
+    TreasuryRoundConfirmed { group_id: 0, round_index }.publish(env);
 }
 
 pub fn emit_treasury_payment_executed(env: &Env, recipient: Address, amount: i128) {
-    env.events().publish(
-        ("ahjoor", "treasury_payment_executed"),
-        TreasuryPaymentExecuted { group_id: 0, recipient, amount },
-    );
+    TreasuryPaymentExecuted { group_id: 0, recipient, amount }.publish(env);
 }
 
 // --- Emergency Liquidity Reserve Events (#313) ---
@@ -1757,3 +1745,79 @@ pub fn emit_sealed_auction_settled(
     SealedAuctionSettled { group_id, round, winner, winning_bid }.publish(e);
 }
 
+
+// --- Slot Auction Events (open auction variant) ---
+
+/// Event: A bid was placed in an open slot auction
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SlotBidPlaced {
+    pub group_id: u32,
+    pub bidder: Address,
+    pub desired_slot: u32,
+    pub bid_amount: i128,
+}
+
+pub fn emit_slot_bid_placed(e: &Env, group_id: u32, bidder: Address, desired_slot: u32, bid_amount: i128) {
+    SlotBidPlaced { group_id, bidder, desired_slot, bid_amount }.publish(e);
+}
+
+/// Event: An open slot auction was resolved
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SlotAuctionResolved {
+    pub group_id: u32,
+    pub winner: Address,
+    pub slot: u32,
+    pub winning_bid: i128,
+    pub bonus_per_member: i128,
+}
+
+pub fn emit_slot_auction_resolved(e: &Env, group_id: u32, winner: Address, slot: u32, winning_bid: i128, bonus_per_member: i128) {
+    SlotAuctionResolved { group_id, winner, slot, winning_bid, bonus_per_member }.publish(e);
+}
+
+// --- Cross-Group Migration Events ---
+
+/// Event: A member requested migration to another group
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MigrationRequested {
+    pub member: Address,
+    pub src_contract: Address,
+    pub to_group: Address,
+}
+
+pub fn emit_migration_requested(e: &Env, member: Address, src_contract: Address, to_group: Address) {
+    MigrationRequested { member, src_contract, to_group }.publish(e);
+}
+
+/// Event: A member migration was executed into this group
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MigrationExecuted {
+    pub member: Address,
+    pub from_group: Address,
+    pub dest_contract: Address,
+    pub target_slot: u32,
+}
+
+pub fn emit_migration_executed(e: &Env, member: Address, from_group: Address, dest_contract: Address, target_slot: u32) {
+    MigrationExecuted { member, from_group, dest_contract, target_slot }.publish(e);
+}
+
+// --- Proxy Authorization Events ---
+
+/// Event: A proxy authorization has expired
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ProxyExpired {
+    pub group_id: u32,
+    pub member: Address,
+    pub proxy: Address,
+    pub expiry_ledger: u64,
+}
+
+pub fn emit_proxy_expired(e: &Env, group_id: u32, member: Address, proxy: Address, expiry_ledger: u64) {
+    ProxyExpired { group_id, member, proxy, expiry_ledger }.publish(e);
+}

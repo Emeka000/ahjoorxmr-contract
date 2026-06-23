@@ -183,7 +183,7 @@ fn test_replace_verifier_before_submission_then_flow_works() {
 
     let new_verifier = Address::generate(&hx.env);
     hx.client
-        .replace_bounty_milestone_verifier(&hx.buyer, &id, &0, &new_verifier);
+        .replace_bounty_verifier(&hx.buyer, &id, &0, &new_verifier);
 
     // The stored verifier for milestone 0 is updated.
     assert_eq!(
@@ -213,5 +213,5 @@ fn test_replace_verifier_after_submission_is_rejected() {
     let new_verifier = Address::generate(&hx.env);
     // Too late — milestone 0 is already Submitted.
     hx.client
-        .replace_bounty_milestone_verifier(&hx.buyer, &id, &0, &new_verifier);
+        .replace_bounty_verifier(&hx.buyer, &id, &0, &new_verifier);
 }

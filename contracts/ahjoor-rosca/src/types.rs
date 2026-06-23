@@ -289,18 +289,18 @@ pub enum DataKey2 {
     // #240: Co-Signer Guarantee
     CoSigners,               // Map<Address, CoSignerRecord> — member → co-signer record
     CoSignerWindowLedgers,   // u32 — grace period ledgers before penalty applied
-    // #315: Payout Order Randomization
-    RandomizePayoutOrder,    // bool — enable randomization for this group
-    PayoutOrderSeed,         // BytesN<32> — seed for Fisher-Yates shuffle
-    PayoutOrderFinalized,    // bool — track if order has been finalized
-    // #352: Contribution Rebalancing
-    BasePoolTarget,          // i128 — immutable payout target per cycle (initial_members × contribution_amount)
 }
 
 /// Overflow key enum — DataKey2 is capped at 50 variants by the soroban XDR limit.
 #[derive(Clone)]
 #[contracttype]
 pub enum DataKey3 {
+    // #315: Payout Order Randomization
+    RandomizePayoutOrder,    // bool — enable randomization for this group
+    PayoutOrderSeed,         // BytesN<32> — seed for Fisher-Yates shuffle
+    PayoutOrderFinalized,    // bool — track if order has been finalized
+    // #352: Contribution Rebalancing
+    BasePoolTarget,          // i128 — immutable payout target per cycle (initial_members × contribution_amount)
     CoSignerWindowStart,     // Map<Address, u32> — member → ledger when window opened (#240)
     ProxyAuthorizations,     // Map<(u32, Address), ProxyAuthorization> — (group_id, member)
     IsFrozen,                // bool — group is frozen by contract-level admin (#236)
@@ -323,10 +323,11 @@ pub enum DataKey3 {
     MigratedMembers,         // Map<Address, MigratedMemberRecord> — member → migration annotation
     VacantSlots,             // Vec<u32> — slot indices freed by migrated-out members
     // #313: Emergency Liquidity Reserve
+    ReserveEnabled,          // bool — emergency reserve feature flag
     EmergencyReserveBalance, // i128 — total balance in emergency reserve
     EmergencyLoanCounter,    // u32 — counter for loan IDs
-    EmergencyLoan,           // Map<u32, EmergencyLoan> — loan_id → loan record
-    MemberOutstandingLoan,   // Map<Address, u32> — member → active loan_id (0 = none)
+    EmergencyLoan(u32),      // loan_id → EmergencyLoan record
+    MemberOutstandingLoan(Address), // member → active loan_id (0 = none)
     /// #314: Group treasury configuration
     TreasuryConfig,          // TreasuryConfig
     /// #314: Group treasury balance

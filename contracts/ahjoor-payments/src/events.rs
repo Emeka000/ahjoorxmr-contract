@@ -198,7 +198,7 @@ pub struct CustomerUnblocked {
 }
 
 pub fn emit_customer_blocked(e: &Env, merchant: Address, customer: Address, reason: Symbol) {
-    CustomerBlocked { merchant, customer, reason }.publish(e);
+    CustomerBlocked { merchant, customer, reason_code: reason }.publish(e);
 }
 
 pub fn emit_unblock_requested(e: &Env, request_id: u32, merchant: Address, customer: Address) {
@@ -1769,22 +1769,17 @@ pub fn emit_dispute_evidence_submitted(
     evidence_hash: BytesN<32>,
     evidence_type: Symbol,
 ) {
-    e.events().publish(
-        (soroban_sdk::Symbol::new(e, "DispEvidSubmit"),),
-        DisputeEvidenceSubmitted {
-            payment_id,
-            submitter,
-            evidence_hash,
-            evidence_type,
-        },
-    );
+    DisputeEvidenceSubmitted {
+        payment_id,
+        submitter,
+        evidence_hash,
+        evidence_type,
+    }
+    .publish(e);
 }
 
 pub fn emit_evidence_window_closed(e: &Env, payment_id: u32) {
-    e.events().publish(
-        (soroban_sdk::Symbol::new(e, "EvidWinClose"),),
-        EvidenceWindowClosed { payment_id },
-    );
+    EvidenceWindowClosed { payment_id }.publish(e);
 }
 
 // --- Cooling-Off Events (#309) ---
@@ -1813,14 +1808,12 @@ pub fn emit_payment_in_cooling_off(
     customer: Address,
     expiry_ledger: u32,
 ) {
-    e.events().publish(
-        (soroban_sdk::Symbol::new(e, "PmtCoolOff"),),
-        PaymentInCoolingOff {
-            payment_id,
-            customer,
-            expiry_ledger,
-        },
-    );
+    PaymentInCoolingOff {
+        payment_id,
+        customer,
+        expiry_ledger,
+    }
+    .publish(e);
 }
 
 pub fn emit_cooling_off_cancellation(
@@ -1829,14 +1822,12 @@ pub fn emit_cooling_off_cancellation(
     customer: Address,
     refund_amount: i128,
 ) {
-    e.events().publish(
-        (soroban_sdk::Symbol::new(e, "CoolOffCancel"),),
-        CoolingOffCancellation {
-            payment_id,
-            customer,
-            refund_amount,
-        },
-    );
+    CoolingOffCancellation {
+        payment_id,
+        customer,
+        refund_amount,
+    }
+    .publish(e);
 }
 
 pub fn emit_merchant_kyb_set(
@@ -1846,22 +1837,17 @@ pub fn emit_merchant_kyb_set(
     expiry_ledger: u64,
     jurisdiction: String,
 ) {
-    env.events().publish(
-        ("ahjoor", "merchant_kyb_set"),
-        MerchantKYBSet {
-            merchant,
-            kyb_hash,
-            expiry_ledger,
-            jurisdiction,
-        },
-    );
+    MerchantKYBSet {
+        merchant,
+        kyb_hash,
+        expiry_ledger,
+        jurisdiction,
+    }
+    .publish(env);
 }
 
 pub fn emit_merchant_kyb_revoked(env: &Env, merchant: Address) {
-    env.events().publish(
-        ("ahjoor", "merchant_kyb_revoked"),
-        MerchantKYBRevoked { merchant },
-    );
+    MerchantKYBRevoked { merchant }.publish(env);
 }
 // ── #329: Failed Auto-Debit Retry Queue Events ────────────────────────────────
 

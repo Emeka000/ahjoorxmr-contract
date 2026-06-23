@@ -4402,7 +4402,7 @@ fn test_partial_release_escalate() {
     s.env.ledger().set_timestamp(s.env.ledger().timestamp() + 86401);
 
     // Escalate to dispute
-    s.client.escalate_partial_release_to_dispute(&seller, &escrow_id);
+    s.client.escalate_partial_release_dispute(&seller, &escrow_id);
 
     // Check escrow status
     let escrow = s.client.get_escrow(&escrow_id);

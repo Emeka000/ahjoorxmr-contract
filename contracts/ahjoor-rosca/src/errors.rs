@@ -163,3 +163,33 @@ pub enum ExtError {
     /// Not all members have confirmed; cannot execute split yet (#331).
     SplitNotFullyConfirmed = 92,
 }
+
+/// Extension error codes 101+ — overflow from ExtError (50-variant limit).
+#[contracterror]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExtError2 {
+    /// Slot auction feature is not enabled.
+    AuctionNotEnabled = 101,
+    /// No auction is currently open.
+    AuctionNotOpen = 102,
+    /// Auction bidding window has closed.
+    AuctionWindowClosed = 103,
+    /// Contribution amount does not match the required amount.
+    IncorrectContributionAmount = 104,
+    /// Slot index is out of range.
+    InvalidSlotIndex = 105,
+    /// Migration has already been executed.
+    MigrationAlreadyExecuted = 106,
+    /// A migration request is already pending for this member.
+    MigrationAlreadyPending = 107,
+    /// Migration has not been approved by the target group.
+    MigrationNotApproved = 108,
+    /// No migration request found for this member.
+    MigrationNotFound = 109,
+    /// No bid found for the given criteria.
+    NoBidFound = 110,
+    /// Target slot is already occupied by another member.
+    SlotOccupied = 111,
+    /// Token mismatch between source and target groups.
+    TokenMismatch = 112,
+}

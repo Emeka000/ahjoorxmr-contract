@@ -125,15 +125,6 @@ pub struct RefundCounterRejected {
     pub customer: Address,
 }
 
-/// Event: Counter-offer expired and auto-settled (#360)
-#[contractevent]
-#[derive(Clone, Debug)]
-pub struct CounterOfferExpired {
-    pub refund_id: u32,
-    pub resolution: bool,
-    pub original_amount: i128,
-}
-
 /// Event: Counter-offer expired and auto-settled
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -533,7 +524,7 @@ pub struct FraudScoreDecayApplied {
 /// Event: Fraud score block threshold updated
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct FraudScoreBlockThresholdUpdated {
+pub struct FraudBlockThresholdUpdated {
     pub old_threshold: u32,
     pub new_threshold: u32,
 }
@@ -572,7 +563,7 @@ pub fn emit_fraud_score_decay_applied(e: &Env, buyer: Address, old_score: u32, n
 }
 
 pub fn emit_fraud_score_block_threshold_updated(e: &Env, old_threshold: u32, new_threshold: u32) {
-    FraudScoreBlockThresholdUpdated {
+    FraudBlockThresholdUpdated {
         old_threshold,
         new_threshold,
     }
@@ -621,24 +612,6 @@ pub fn emit_counter_offer_expired(e: &Env, refund_id: u32, resolution: bool, ori
     .publish(e);
 }
 
-pub fn emit_counter_offer_expired(e: &Env, refund_id: u32, resolution: bool, original_amount: i128) {
-    CounterOfferExpired {
-        refund_id,
-        resolution,
-        original_amount,
-    }
-    .publish(e);
-}
-
-pub fn emit_counter_offer_expired(e: &Env, refund_id: u32, resolution: bool, original_amount: i128) {
-    CounterOfferExpired {
-        refund_id,
-        resolution,
-        original_amount,
-    }
-    .publish(e);
-}
-
 // --- Issue #228: Refund Merchant Auto-Approval Threshold ---
 
 /// Event: Merchant set their auto-approval threshold
@@ -652,7 +625,7 @@ pub struct AutoApproveThresholdSet {
 /// Event: Refund auto-approved because amount <= merchant threshold
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct RefundAutoApprovedByThreshold {
+pub struct RefundApprovedByLimit {
     pub refund_id: u32,
     pub amount: i128,
 }
@@ -662,7 +635,7 @@ pub fn emit_auto_approve_threshold_set(e: &Env, merchant: Address, amount: i128)
 }
 
 pub fn emit_refund_auto_approved_by_threshold(e: &Env, refund_id: u32, amount: i128) {
-    RefundAutoApprovedByThreshold { refund_id, amount }.publish(e);
+    RefundApprovedByLimit { refund_id, amount }.publish(e);
 }
 
 // --- Issue #245: Partial Refund Approval ---
