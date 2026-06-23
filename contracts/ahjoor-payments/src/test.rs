@@ -6009,3 +6009,22 @@ fn test_extend_payment_expiry_max_ledgers_exceeded() {
     let result = s.client.try_extend_payment_expiry(&merchant, &payment_id, &(DEFAULT_MAX_EXTENSION_LEDGERS + 1));
     assert_eq!(result.unwrap_err().unwrap(), Error::MaxExtensionLedgersExceeded.into());
 }
+
+#[test]
+fn test_withdrawal_default_limits_apply_to_new_merchant() {
+    let s = setup();
+    s.init();
+
+    let merchant = Address::generate(&s.env);
+
+    // Initial check: fallback to defaults automatically without having to set
+    let (window, cap) = s.client.get_withdrawal_rate_limit(&merchant);
+    assert_eq!(window, 86400);
+    assert_eq!(cap, i128::MAX);
+
+    // If admin updates defaults, new merchant should receive new bounds
+    s.client.set_default_withdrawal_limits(&s.admin, &3600, &1000);
+    let (new_window, new_cap) = s.client.get_withdrawal_rate_limit(&merchant);
+    assert_eq!(new_window, 3600);
+    assert_eq!(new_cap, 1000);
+}

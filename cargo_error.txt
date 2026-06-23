@@ -1,0 +1,2362 @@
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+   --> contracts\ahjoor-token-whitelist\src\events.rs:139:16
+    |
+139 |     e.events().publish(
+    |                ^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: struct `TokenOracleUpdated` is never constructed
+  --> contracts\ahjoor-token-whitelist\src\events.rs:71:12
+   |
+71 | pub struct TokenOracleUpdated {
+   |            ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `emit_token_oracle_updated` is never used
+  --> contracts\ahjoor-token-whitelist\src\events.rs:81:8
+   |
+81 | pub fn emit_token_oracle_updated(e: &Env, token: Address, old_oracle: Option<Address>, new_oracle: Option<Address>) {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: trait `TokenWhitelistInterface` is never used
+ --> contracts\ahjoor-token-whitelist\src\client.rs:7:11
+  |
+7 | pub trait TokenWhitelistInterface {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `ahjoor-token-whitelist` (lib) generated 4 warnings
+   Compiling ahjoor-payments v0.1.0 (C:\Users\ADMIN\Desktop\lekan-drips\ahjoorxmr-contract\contracts\ahjoor-payments)
+error: custom attribute panicked
+   --> contracts\ahjoor-payments\src\lib.rs:857:1
+    |
+857 | #[contracttype]
+    | ^^^^^^^^^^^^^^^
+    |
+    = help: message: called `Result::unwrap()` on an `Err` value: LengthExceedsMax
+
+error[E0425]: cannot find type `DataKey2` in this scope
+    --> contracts\ahjoor-payments\src\lib.rs:5696:20
+     |
+ 752 | pub enum DataKey {
+     | ---------------- similarly named enum `DataKey` defined here
+...
+5696 |             .get::<DataKey2, WithdrawalLimit>(&DataKey2::MerchantWithdrawalLimit(merchant.clone()))
+     |                    ^^^^^^^^
+     |
+help: an enum with a similar name exists
+     |
+5696 -             .get::<DataKey2, WithdrawalLimit>(&DataKey2::MerchantWithdrawalLimit(merchant.clone()))
+5696 +             .get::<DataKey, WithdrawalLimit>(&DataKey2::MerchantWithdrawalLimit(merchant.clone()))
+     |
+help: you might be missing a type parameter
+     |
+1068 | impl<DataKey2> AhjoorPaymentsContract {
+     |     ++++++++++
+
+error[E0425]: cannot find type `DataKey2` in this scope
+    --> contracts\ahjoor-payments\src\lib.rs:5746:63
+     |
+ 752 | pub enum DataKey {
+     | ---------------- similarly named enum `DataKey` defined here
+...
+5746 |         if let Some(limit) = env.storage().persistent().get::<DataKey2, WithdrawalLimit>(
+     |                                                               ^^^^^^^^
+     |
+help: an enum with a similar name exists
+     |
+5746 -         if let Some(limit) = env.storage().persistent().get::<DataKey2, WithdrawalLimit>(
+5746 +         if let Some(limit) = env.storage().persistent().get::<DataKey, WithdrawalLimit>(
+     |
+help: you might be missing a type parameter
+     |
+1068 | impl<DataKey2> AhjoorPaymentsContract {
+     |     ++++++++++
+
+error[E0425]: cannot find type `DataKey2` in this scope
+    --> contracts\ahjoor-payments\src\lib.rs:5751:65
+     |
+ 752 | pub enum DataKey {
+     | ---------------- similarly named enum `DataKey` defined here
+...
+5751 |             let window_seconds = env.storage().instance().get::<DataKey2, u64>(&DataKey2::DefaultWithdrawalWindow).unwrap_or(86400);
+     |                                                                 ^^^^^^^^
+     |
+help: an enum with a similar name exists
+     |
+5751 -             let window_seconds = env.storage().instance().get::<DataKey2, u64>(&DataKey2::DefaultWithdrawalWindow).unwrap_or(86400);
+5751 +             let window_seconds = env.storage().instance().get::<DataKey, u64>(&DataKey2::DefaultWithdrawalWindow).unwrap_or(86400);
+     |
+help: you might be missing a type parameter
+     |
+1068 | impl<DataKey2> AhjoorPaymentsContract {
+     |     ++++++++++
+
+error[E0425]: cannot find type `DataKey2` in this scope
+    --> contracts\ahjoor-payments\src\lib.rs:5752:54
+     |
+ 752 | pub enum DataKey {
+     | ---------------- similarly named enum `DataKey` defined here
+...
+5752 |             let cap = env.storage().instance().get::<DataKey2, i128>(&DataKey2::DefaultWithdrawalCap).unwrap_or(i128::MAX);
+     |                                                      ^^^^^^^^
+     |
+help: an enum with a similar name exists
+     |
+5752 -             let cap = env.storage().instance().get::<DataKey2, i128>(&DataKey2::DefaultWithdrawalCap).unwrap_or(i128::MAX);
+5752 +             let cap = env.storage().instance().get::<DataKey, i128>(&DataKey2::DefaultWithdrawalCap).unwrap_or(i128::MAX);
+     |
+help: you might be missing a type parameter
+     |
+1068 | impl<DataKey2> AhjoorPaymentsContract {
+     |     ++++++++++
+
+error[E0425]: cannot find type `DataKey2` in this scope
+    --> contracts\ahjoor-payments\src\lib.rs:5762:67
+     |
+ 752 | pub enum DataKey {
+     | ---------------- similarly named enum `DataKey` defined here
+...
+5762 |             if let Some(limit) = env.storage().persistent().get::<DataKey2, WithdrawalLimit>(
+     |                                                                   ^^^^^^^^
+     |
+help: an enum with a similar name exists
+     |
+5762 -             if let Some(limit) = env.storage().persistent().get::<DataKey2, WithdrawalLimit>(
+5762 +             if let Some(limit) = env.storage().persistent().get::<DataKey, WithdrawalLimit>(
+     |
+help: you might be missing a type parameter
+     |
+1068 | impl<DataKey2> AhjoorPaymentsContract {
+     |     ++++++++++
+
+error[E0425]: cannot find type `DataKey2` in this scope
+    --> contracts\ahjoor-payments\src\lib.rs:5769:28
+     |
+ 752 | pub enum DataKey {
+     | ---------------- similarly named enum `DataKey` defined here
+...
+5769 |                     .get::<DataKey2, u64>(&DataKey2::DefaultWithdrawalWindow),
+     |                            ^^^^^^^^
+     |
+help: an enum with a similar name exists
+     |
+5769 -                     .get::<DataKey2, u64>(&DataKey2::DefaultWithdrawalWindow),
+5769 +                     .get::<DataKey, u64>(&DataKey2::DefaultWithdrawalWindow),
+     |
+help: you might be missing a type parameter
+     |
+1068 | impl<DataKey2> AhjoorPaymentsContract {
+     |     ++++++++++
+
+error[E0425]: cannot find type `DataKey2` in this scope
+    --> contracts\ahjoor-payments\src\lib.rs:5772:28
+     |
+ 752 | pub enum DataKey {
+     | ---------------- similarly named enum `DataKey` defined here
+...
+5772 |                     .get::<DataKey2, i128>(&DataKey2::DefaultWithdrawalCap),
+     |                            ^^^^^^^^
+     |
+help: an enum with a similar name exists
+     |
+5772 -                     .get::<DataKey2, i128>(&DataKey2::DefaultWithdrawalCap),
+5772 +                     .get::<DataKey, i128>(&DataKey2::DefaultWithdrawalCap),
+     |
+help: you might be missing a type parameter
+     |
+1068 | impl<DataKey2> AhjoorPaymentsContract {
+     |     ++++++++++
+
+error[E0425]: cannot find type `DataKey2` in this scope
+    --> contracts\ahjoor-payments\src\lib.rs:6674:20
+     |
+ 752 | pub enum DataKey {
+     | ---------------- similarly named enum `DataKey` defined here
+...
+6674 |             .get::<DataKey2, Address>(&DataKey2::RefundContract)
+     |                    ^^^^^^^^
+     |
+help: an enum with a similar name exists
+     |
+6674 -             .get::<DataKey2, Address>(&DataKey2::RefundContract)
+6674 +             .get::<DataKey, Address>(&DataKey2::RefundContract)
+     |
+help: you might be missing a type parameter
+     |
+1068 | impl<DataKey2> AhjoorPaymentsContract {
+     |     ++++++++++
+
+warning: unused imports: `Bytes`, `Symbol`, `contract`, `contractimpl`, `panic_with_error`, and `token`
+ --> contracts\ahjoor-payments\src\multi_token_invoice.rs:3:5
+  |
+3 |     contract, contracterror, contractclient, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
+  |     ^^^^^^^^                                 ^^^^^^^^^^^^                ^^^^^^^^^^^^^^^^  ^^^^^           ^^^^^
+4 |     BytesN, Env, Map, String, Symbol, Vec,
+  |                               ^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `Bytes`, `contract`, `contracterror`, `contractimpl`, and `contracttype`
+ --> contracts\ahjoor-payments\src\multi_token_invoice_impl.rs:3:5
+  |
+3 |     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
+  |     ^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^                                    ^^^^^
+
+warning: unused imports: `Bytes`, `Symbol`, `contract`, `contractimpl`, `panic_with_error`, and `token`
+ --> contracts\ahjoor-payments\src\pre_approved_spending.rs:3:5
+  |
+3 |     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
+  |     ^^^^^^^^                 ^^^^^^^^^^^^                ^^^^^^^^^^^^^^^^  ^^^^^           ^^^^^
+4 |     BytesN, Env, Map, String, Symbol, Vec,
+  |                               ^^^^^^
+
+warning: unused imports: `Bytes`, `contract`, `contracterror`, `contractimpl`, `contracttype`, and `token`
+ --> contracts\ahjoor-payments\src\pre_approved_spending_impl.rs:3:5
+  |
+3 |     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
+  |     ^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^                    ^^^^^           ^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+   --> contracts\ahjoor-payments\src\multi_token_invoice_impl.rs:607:22
+    |
+607 |         env.events().publish(
+    |                      ^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1313:16
+     |
+1313 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1319:16
+     |
+1319 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1642:16
+     |
+1642 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1649:16
+     |
+1649 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1665:16
+     |
+1665 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1672:16
+     |
+1672 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1685:16
+     |
+1685 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1692:16
+     |
+1692 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1704:16
+     |
+1704 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1861:16
+     |
+1861 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1868:16
+     |
+1868 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1875:16
+     |
+1875 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1889:16
+     |
+1889 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1901:16
+     |
+1901 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1916:16
+     |
+1916 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1923:16
+     |
+1923 |     e.events().publish(
+     |                ^^^^^^^
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1112:14
+     |
+1112 |             &DataKey2::MaxExtensionLedgers,
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1117:19
+     |
+1117 |             .set(&DataKey2::MaxExtensions, &DEFAULT_MAX_EXTENSIONS);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1121:19
+     |
+1121 |             .set(&DataKey2::DefaultWithdrawalWindow, &86400u64);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1124:19
+     |
+1124 |             .set(&DataKey2::DefaultWithdrawalCap, &i128::MAX);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1294:19
+     |
+1294 |             .has(&DataKey2::CustomerBlockEntry(merchant.clone(), customer.clone()))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1299:23
+     |
+1299 |                 .get(&DataKey2::CustomerBlockEntry(merchant.clone(), customer.clone()))
+     |                       ^^^^^^^^
+     |                       |
+     |                       use of undeclared type `DataKey2`
+     |                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1305:23
+     |
+1305 |                 .get(&DataKey2::MaxBlockAgeLedgers)
+     |                       ^^^^^^^^
+     |                       |
+     |                       use of undeclared type `DataKey2`
+     |                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1311:30
+     |
+1311 |                     .remove(&DataKey2::CustomerBlockEntry(merchant.clone(), customer.clone()));
+     |                              ^^^^^^^^
+     |                              |
+     |                              use of undeclared type `DataKey2`
+     |                              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1427:41
+     |
+1427 |         env.storage().persistent().set(&DataKey2::CustomerBlockEntry(merchant.clone(), customer.clone()), &entry);
+     |                                         ^^^^^^^^
+     |                                         |
+     |                                         use of undeclared type `DataKey2`
+     |                                         help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1428:48
+     |
+1428 | ...   env.storage().persistent().extend_ttl(&DataKey2::CustomerBlockEntry(merchant.clone(), customer.clone()), PERSISTENT_LIFETIME_THRESH...
+     |                                              ^^^^^^^^
+     |                                              |
+     |                                              use of undeclared type `DataKey2`
+     |                                              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1437:57
+     |
+1437 |         let window: u32 = env.storage().instance().get(&DataKey2::MaxBlockAgeLedgers).unwrap_or(0u32);
+     |                                                         ^^^^^^^^
+     |                                                         |
+     |                                                         use of undeclared type `DataKey2`
+     |                                                         help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1446:41
+     |
+1446 |         env.storage().persistent().set(&DataKey2::UnblockRequest(counter), &req);
+     |                                         ^^^^^^^^
+     |                                         |
+     |                                         use of undeclared type `DataKey2`
+     |                                         help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1447:48
+     |
+1447 |         env.storage().persistent().extend_ttl(&DataKey2::UnblockRequest(counter), PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+     |                                                ^^^^^^^^
+     |                                                |
+     |                                                use of undeclared type `DataKey2`
+     |                                                help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1458:67
+     |
+1458 |         let req: UnblockRequest = env.storage().persistent().get(&DataKey2::UnblockRequest(request_id)).expect("Request not found");
+     |                                                                   ^^^^^^^^
+     |                                                                   |
+     |                                                                   use of undeclared type `DataKey2`
+     |                                                                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1460:48
+     |
+1460 |             env.storage().persistent().remove(&DataKey2::CustomerBlockEntry(req.merchant.clone(), req.customer.clone()));
+     |                                                ^^^^^^^^
+     |                                                |
+     |                                                use of undeclared type `DataKey2`
+     |                                                help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1463:44
+     |
+1463 |         env.storage().persistent().remove(&DataKey2::UnblockRequest(request_id));
+     |                                            ^^^^^^^^
+     |                                            |
+     |                                            use of undeclared type `DataKey2`
+     |                                            help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:1470:44
+     |
+1470 |         env.storage().persistent().remove(&DataKey2::CustomerBlockEntry(merchant.clone(), customer.clone()));
+     |                                            ^^^^^^^^
+     |                                            |
+     |                                            use of undeclared type `DataKey2`
+     |                                            help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2018:19
+     |
+2018 |             .get(&DataKey2::DisputeEvidence(payment_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2054:19
+     |
+2054 |             .set(&DataKey2::DisputeEvidence(payment_id), &evidence_record);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2056:14
+     |
+2056 |             &DataKey2::DisputeEvidence(payment_id),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2087:19
+     |
+2087 |             .get(&DataKey2::DisputeEvidence(payment_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2094:19
+     |
+2094 |             .set(&DataKey2::DisputeEvidence(payment_id), &evidence_record);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2096:14
+     |
+2096 |             &DataKey2::DisputeEvidence(payment_id),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2112:19
+     |
+2112 |             .get(&DataKey2::DisputeEvidence(payment_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2134:19
+     |
+2134 |             .get(&DataKey2::DisputeEvidence(payment_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2141:19
+     |
+2141 |             .set(&DataKey2::DisputeEvidence(payment_id), &evidence_record);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2143:14
+     |
+2143 |             &DataKey2::DisputeEvidence(payment_id),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2179:23
+     |
+2179 |                 .set(&DataKey2::CoolingOffConfig(payment_id), &cooling_off_config);
+     |                       ^^^^^^^^
+     |                       |
+     |                       use of undeclared type `DataKey2`
+     |                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2181:18
+     |
+2181 |                 &DataKey2::CoolingOffConfig(payment_id),
+     |                  ^^^^^^^^
+     |                  |
+     |                  use of undeclared type `DataKey2`
+     |                  help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2212:19
+     |
+2212 |             .get(&DataKey2::CoolingOffConfig(payment_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2253:19
+     |
+2253 |             .set(&DataKey2::EvidenceWindowLedgers, &ledgers);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2263:19
+     |
+2263 |             .get(&DataKey2::EvidenceWindowLedgers)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2272:19
+     |
+2272 |             .set(&DataKey2::MaxEvidenceSubmissions, &max_submissions);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2282:19
+     |
+2282 |             .get(&DataKey2::MaxEvidenceSubmissions)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2291:19
+     |
+2291 |             .set(&DataKey2::MaxCoolingOffLedgers, &max_ledgers);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2301:19
+     |
+2301 |             .get(&DataKey2::MaxCoolingOffLedgers)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2920:19
+     |
+2920 |             .set(&DataKey2::MaxExtensionLedgers, &max_extension_ledgers);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2923:19
+     |
+2923 |             .set(&DataKey2::MaxExtensions, &max_extensions);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2934:19
+     |
+2934 |             .get(&DataKey2::MaxExtensionLedgers)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:2939:19
+     |
+2939 |             .get(&DataKey2::MaxExtensions)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:3372:19
+     |
+3372 |             .get(&DataKey2::ApprovalState(payment_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:3438:23
+     |
+3438 |                 .set(&DataKey2::ApprovalState(payment_id), &state);
+     |                       ^^^^^^^^
+     |                       |
+     |                       use of undeclared type `DataKey2`
+     |                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:3440:18
+     |
+3440 |                 &DataKey2::ApprovalState(payment_id),
+     |                  ^^^^^^^^
+     |                  |
+     |                  use of undeclared type `DataKey2`
+     |                  help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:3474:19
+     |
+3474 |             .get(&DataKey2::ApprovalState(payment_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:3537:19
+     |
+3537 |         let key = DataKey2::Voucher(merchant.clone(), code_hash.clone());
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:3579:19
+     |
+3579 |         let key = DataKey2::Voucher(merchant.clone(), code_hash.clone());
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:3612:19
+     |
+3612 |             .get(&DataKey2::Voucher(merchant, code_hash))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:3665:31
+     |
+3665 |             let voucher_key = DataKey2::Voucher(merchant.clone(), code_hash.clone());
+     |                               ^^^^^^^^
+     |                               |
+     |                               use of undeclared type `DataKey2`
+     |                               help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:3813:23
+     |
+3813 |                 .set(&DataKey2::ApprovalState(payment_id), &state);
+     |                       ^^^^^^^^
+     |                       |
+     |                       use of undeclared type `DataKey2`
+     |                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:3815:18
+     |
+3815 |                 &DataKey2::ApprovalState(payment_id),
+     |                  ^^^^^^^^
+     |                  |
+     |                  use of undeclared type `DataKey2`
+     |                  help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:4029:19
+     |
+4029 |             .set(&DataKey2::RefundContract, &refund_contract);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5640:19
+     |
+5640 |             .set(&DataKey2::WithdrawalWindowSeconds, &window_seconds);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5643:19
+     |
+5643 |             .set(&DataKey2::WithdrawalWindowCap, &cap);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5665:19
+     |
+5665 |             .set(&DataKey2::MerchantWithdrawalLimit(merchant.clone()), &limit);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5667:14
+     |
+5667 |             &DataKey2::MerchantWithdrawalLimit(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5696:48
+     |
+5696 |             .get::<DataKey2, WithdrawalLimit>(&DataKey2::MerchantWithdrawalLimit(merchant.clone()))
+     |                                                ^^^^^^^^
+     |                                                |
+     |                                                use of undeclared type `DataKey2`
+     |                                                help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5701:27
+     |
+5701 |                     .get(&DataKey2::DefaultWithdrawalWindow)
+     |                           ^^^^^^^^
+     |                           |
+     |                           use of undeclared type `DataKey2`
+     |                           help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5710:19
+     |
+5710 |             .set(&DataKey2::MerchantWithdrawalLimit(merchant.clone()), &limit);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5712:14
+     |
+5712 |             &DataKey2::MerchantWithdrawalLimit(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5735:19
+     |
+5735 |             .set(&DataKey2::DefaultWithdrawalWindow, &window_seconds);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5738:19
+     |
+5738 |             .set(&DataKey2::DefaultWithdrawalCap, &cap);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5747:14
+     |
+5747 |             &DataKey2::MerchantWithdrawalLimit(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5751:81
+     |
+5751 |             let window_seconds = env.storage().instance().get::<DataKey2, u64>(&DataKey2::DefaultWithdrawalWindow).unwrap_or(86400);
+     |                                                                                 ^^^^^^^^
+     |                                                                                 |
+     |                                                                                 use of undeclared type `DataKey2`
+     |                                                                                 help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5752:71
+     |
+5752 |             let cap = env.storage().instance().get::<DataKey2, i128>(&DataKey2::DefaultWithdrawalCap).unwrap_or(i128::MAX);
+     |                                                                       ^^^^^^^^
+     |                                                                       |
+     |                                                                       use of undeclared type `DataKey2`
+     |                                                                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5763:18
+     |
+5763 |                 &DataKey2::MerchantWithdrawalLimit(merchant.clone()),
+     |                  ^^^^^^^^
+     |                  |
+     |                  use of undeclared type `DataKey2`
+     |                  help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5769:44
+     |
+5769 |                     .get::<DataKey2, u64>(&DataKey2::DefaultWithdrawalWindow),
+     |                                            ^^^^^^^^
+     |                                            |
+     |                                            use of undeclared type `DataKey2`
+     |                                            help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5772:45
+     |
+5772 |                     .get::<DataKey2, i128>(&DataKey2::DefaultWithdrawalCap),
+     |                                             ^^^^^^^^
+     |                                             |
+     |                                             use of undeclared type `DataKey2`
+     |                                             help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:5781:25
+     |
+5781 |         let state_key = DataKey2::MerchantWithdrawalWindow(merchant.clone());
+     |                         ^^^^^^^^
+     |                         |
+     |                         use of undeclared type `DataKey2`
+     |                         help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:6051:19
+     |
+6051 |             .get(&DataKey2::DynamicPayment(payment.id));
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:6288:19
+     |
+6288 |             .get(&DataKey2::CoolingOffConfig(payment_id));
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:6298:27
+     |
+6298 |                     .set(&DataKey2::CoolingOffConfig(payment_id), &config);
+     |                           ^^^^^^^^
+     |                           |
+     |                           use of undeclared type `DataKey2`
+     |                           help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:6300:22
+     |
+6300 |                     &DataKey2::CoolingOffConfig(payment_id),
+     |                      ^^^^^^^^
+     |                      |
+     |                      use of undeclared type `DataKey2`
+     |                      help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:6632:19
+     |
+6632 |             .get(&DataKey2::MerchantStatus(merchant.clone()))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:6641:27
+     |
+6641 |                     .get(&DataKey2::MerchantSuspensionExpiry(merchant.clone()))
+     |                           ^^^^^^^^
+     |                           |
+     |                           use of undeclared type `DataKey2`
+     |                           help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:6674:40
+     |
+6674 |             .get::<DataKey2, Address>(&DataKey2::RefundContract)
+     |                                        ^^^^^^^^
+     |                                        |
+     |                                        use of undeclared type `DataKey2`
+     |                                        help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:6847:19
+     |
+6847 |         let key = DataKey2::MerchantSummary(merchant.clone());
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:6876:19
+     |
+6876 |         let key = DataKey2::MerchantSummary(merchant.clone());
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:6906:19
+     |
+6906 |         let key = DataKey2::MerchantSummary(merchant.clone());
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7133:19
+     |
+7133 |             .set(&DataKey2::AppealRejectionCooldownSeconds, &seconds);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7163:14
+     |
+7163 |             &DataKey2::MerchantStatus(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7167:14
+     |
+7167 |             &DataKey2::MerchantSuspensionExpiry(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7171:14
+     |
+7171 |             &DataKey2::MerchantStatus(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7176:14
+     |
+7176 |             &DataKey2::MerchantSuspensionExpiry(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7202:14
+     |
+7202 |             &DataKey2::MerchantStatus(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7209:14
+     |
+7209 |             &DataKey2::MerchantStatus(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7235:14
+     |
+7235 |             &DataKey2::MerchantStatus(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7242:14
+     |
+7242 |             &DataKey2::MerchantStatus(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7260:19
+     |
+7260 |             .get(&DataKey2::MerchantStatus(merchant.clone()))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7271:19
+     |
+7271 |             .get(&DataKey2::MerchantAppeal(merchant.clone()));
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7282:19
+     |
+7282 |             .get(&DataKey2::AppealCooldownUntil(merchant.clone()))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7298:19
+     |
+7298 |             .set(&DataKey2::MerchantAppeal(merchant.clone()), &appeal);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7300:14
+     |
+7300 |             &DataKey2::MerchantAppeal(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7328:19
+     |
+7328 |             .get(&DataKey2::MerchantAppeal(merchant.clone()))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7339:19
+     |
+7339 |             .get(&DataKey2::AppealRejectionCooldownSeconds)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7347:19
+     |
+7347 |             .set(&DataKey2::MerchantAppeal(merchant.clone()), &appeal);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7349:14
+     |
+7349 |             &DataKey2::MerchantAppeal(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7368:19
+     |
+7368 |             .get(&DataKey2::MerchantAppeal(merchant.clone()))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7385:19
+     |
+7385 |             .set(&DataKey2::MerchantAppeal(merchant.clone()), &updated_appeal);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7387:14
+     |
+7387 |             &DataKey2::MerchantAppeal(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7394:14
+     |
+7394 |             &DataKey2::MerchantStatus(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7401:14
+     |
+7401 |             &DataKey2::MerchantStatus(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7425:19
+     |
+7425 |             .get(&DataKey2::MerchantAppeal(merchant.clone()))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7435:19
+     |
+7435 |             .set(&DataKey2::MerchantAppeal(merchant.clone()), &appeal);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7441:19
+     |
+7441 |             .get(&DataKey2::AppealRejectionCooldownSeconds)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7446:19
+     |
+7446 |             .set(&DataKey2::AppealCooldownUntil(merchant.clone()), &cooldown_until);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7448:14
+     |
+7448 |             &DataKey2::AppealCooldownUntil(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7464:19
+     |
+7464 |             .get(&DataKey2::MerchantStatus(merchant))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7472:19
+     |
+7472 |             .get(&DataKey2::MerchantAppeal(merchant))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7481:19
+     |
+7481 |             .get(&DataKey2::MerchantSummary(merchant))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7496:19
+     |
+7496 |             .get(&DataKey2::MerchantSummary(merchant))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7512:19
+     |
+7512 |             .get(&DataKey2::MerchantSummary(merchant))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7544:19
+     |
+7544 |         let key = DataKey2::MerchantSummary(merchant);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7582:19
+     |
+7582 |             .set(&DataKey2::LoyaltyPointsPerUnit, &points_per_unit);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7585:19
+     |
+7585 |             .set(&DataKey2::LoyaltyRedemptionRateBps, &redemption_rate_bps);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7588:19
+     |
+7588 |             .set(&DataKey2::LoyaltyMinPaymentFloor, &min_payment_floor);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7591:19
+     |
+7591 |             .set(&DataKey2::LoyaltyExpiryLedgers, &expiry_ledgers);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7610:19
+     |
+7610 |             .get(&DataKey2::LoyaltyBalance(customer.clone()))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7619:19
+     |
+7619 |             .get(&DataKey2::LoyaltyRedemptionRateBps)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7624:19
+     |
+7624 |             .get(&DataKey2::LoyaltyMinPaymentFloor)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7657:19
+     |
+7657 |             .set(&DataKey2::LoyaltyBalance(customer.clone()), &new_balance);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7659:14
+     |
+7659 |             &DataKey2::LoyaltyBalance(customer.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7708:19
+     |
+7708 |         let key = DataKey2::CustomerSpendLimit(merchant.clone(), customer.clone());
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7729:19
+     |
+7729 |         let key = DataKey2::CustomerSpendLimit(merchant.clone(), customer.clone());
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7747:19
+     |
+7747 |         let key = DataKey2::DefaultSpendLimit(merchant.clone());
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7772:19
+     |
+7772 |             .get(&DataKey2::CustomerSpendLimit(merchant, customer))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7779:19
+     |
+7779 |             .get(&DataKey2::DefaultSpendLimit(merchant))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7855:19
+     |
+7855 |             .get(&DataKey2::CustomerSpendLimit(merchant.clone(), customer.clone()))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7870:27
+     |
+7870 |                     .get(&DataKey2::DefaultSpendLimit(merchant.clone()))
+     |                           ^^^^^^^^
+     |                           |
+     |                           use of undeclared type `DataKey2`
+     |                           help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7878:25
+     |
+7878 |         let state_key = DataKey2::CustomerSpendWindowState(merchant.clone(), customer.clone());
+     |                         ^^^^^^^^
+     |                         |
+     |                         use of undeclared type `DataKey2`
+     |                         help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7949:19
+     |
+7949 |             .get(&DataKey2::RecurringInvoiceCounter)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7955:19
+     |
+7955 |             .set(&DataKey2::RecurringInvoiceCounter, &counter);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7974:19
+     |
+7974 |             .set(&DataKey2::RecurringInvoice(invoice_id), &invoice);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7976:14
+     |
+7976 |             &DataKey2::RecurringInvoice(invoice_id),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:7999:19
+     |
+7999 |             .get(&DataKey2::RecurringInvoice(invoice_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8040:19
+     |
+8040 |             .set(&DataKey2::RecurringInvoice(invoice_id), &invoice);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8042:14
+     |
+8042 |             &DataKey2::RecurringInvoice(invoice_id),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8065:19
+     |
+8065 |             .get(&DataKey2::LoyaltyBalance(customer))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8074:19
+     |
+8074 |             .get(&DataKey2::LoyaltyPointsPerUnit)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8094:19
+     |
+8094 |             .get(&DataKey2::LoyaltyBalance(customer.clone()))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8100:19
+     |
+8100 |             .set(&DataKey2::LoyaltyBalance(customer.clone()), &new_balance);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8102:14
+     |
+8102 |             &DataKey2::LoyaltyBalance(customer.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8107:14
+     |
+8107 |             &DataKey2::LoyaltyLastAccrualLedger(customer.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8111:14
+     |
+8111 |             &DataKey2::LoyaltyLastAccrualLedger(customer.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8132:19
+     |
+8132 |             .get(&DataKey2::RecurringInvoice(invoice_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8146:19
+     |
+8146 |             .set(&DataKey2::RecurringInvoice(invoice_id), &invoice);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8148:14
+     |
+8148 |             &DataKey2::RecurringInvoice(invoice_id),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8165:19
+     |
+8165 |             .get(&DataKey2::LoyaltyExpiryLedgers)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8173:19
+     |
+8173 |             .get(&DataKey2::LoyaltyLastAccrualLedger(customer.clone()))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8183:23
+     |
+8183 |                 .get(&DataKey2::LoyaltyBalance(customer.clone()))
+     |                       ^^^^^^^^
+     |                       |
+     |                       use of undeclared type `DataKey2`
+     |                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8188:27
+     |
+8188 |                     .set(&DataKey2::LoyaltyBalance(customer.clone()), &0i128);
+     |                           ^^^^^^^^
+     |                           |
+     |                           use of undeclared type `DataKey2`
+     |                           help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8198:19
+     |
+8198 |             .get(&DataKey2::RecurringInvoice(invoice_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8216:19
+     |
+8216 |             .set(&DataKey2::ReferralCommissionBps, &commission_bps);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8219:19
+     |
+8219 |             .set(&DataKey2::ReferralWindowLedgers, &window_ledgers);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8254:19
+     |
+8254 |             .get(&DataKey2::ReferralWindowLedgers)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8261:19
+     |
+8261 |         let key = DataKey2::ReferralRecord(referred_merchant.clone());
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8280:19
+     |
+8280 |         let key = DataKey2::PendingCommission(referrer.clone());
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8306:19
+     |
+8306 |             .get(&DataKey2::PendingCommission(referrer))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8314:19
+     |
+8314 |             .get(&DataKey2::ReferralRecord(referred_merchant))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8331:19
+     |
+8331 |             .get(&DataKey2::ReferralRecord(merchant.clone()));
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8351:19
+     |
+8351 |             .get(&DataKey2::ReferralCommissionBps)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8362:27
+     |
+8362 |         let pending_key = DataKey2::PendingCommission(record.referrer.clone());
+     |                           ^^^^^^^^
+     |                           |
+     |                           use of undeclared type `DataKey2`
+     |                           help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8468:23
+     |
+8468 |                 .get(&DataKey2::MaxTipBps)
+     |                       ^^^^^^^^
+     |                       |
+     |                       use of undeclared type `DataKey2`
+     |                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8540:39
+     |
+8540 |         env.storage().instance().set(&DataKey2::MaxTipBps, &max_bps);
+     |                                       ^^^^^^^^
+     |                                       |
+     |                                       use of undeclared type `DataKey2`
+     |                                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8574:19
+     |
+8574 |             .set(&DataKey2::MerchantKYB(merchant.clone()), &kyb);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8576:14
+     |
+8576 |             &DataKey2::MerchantKYB(merchant.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8598:19
+     |
+8598 |             .set(&DataKey2::KYBEnforcementEnabled, &enabled);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8619:37
+     |
+8619 |             .get::<_, MerchantKYB>(&DataKey2::MerchantKYB(merchant.clone()))
+     |                                     ^^^^^^^^
+     |                                     |
+     |                                     use of undeclared type `DataKey2`
+     |                                     help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8624:23
+     |
+8624 |                 .set(&DataKey2::MerchantKYB(merchant.clone()), &kyb);
+     |                       ^^^^^^^^
+     |                       |
+     |                       use of undeclared type `DataKey2`
+     |                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8626:18
+     |
+8626 |                 &DataKey2::MerchantKYB(merchant.clone()),
+     |                  ^^^^^^^^
+     |                  |
+     |                  use of undeclared type `DataKey2`
+     |                  help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8642:37
+     |
+8642 |             .get::<_, MerchantKYB>(&DataKey2::MerchantKYB(merchant.clone()))
+     |                                     ^^^^^^^^
+     |                                     |
+     |                                     use of undeclared type `DataKey2`
+     |                                     help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8645:18
+     |
+8645 |                 &DataKey2::MerchantKYB(merchant),
+     |                  ^^^^^^^^
+     |                  |
+     |                  use of undeclared type `DataKey2`
+     |                  help: an enum with a similar name exists: `DataKey`
+
+warning: use of deprecated associated function `soroban_sdk::String::from_slice`: use from_str
+    --> contracts\ahjoor-payments\src\lib.rs:8660:39
+     |
+8660 |                 jurisdiction: String::from_slice(&env, ""),
+     |                                       ^^^^^^^^^^
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8669:30
+     |
+8669 |             .get::<_, bool>(&DataKey2::KYBEnforcementEnabled)
+     |                              ^^^^^^^^
+     |                              |
+     |                              use of undeclared type `DataKey2`
+     |                              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8676:19
+     |
+8676 |             .get(&DataKey2::MaxTipBps)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8825:19
+     |
+8825 |             .set(&DataKey2::ConsentRecord(consent_id), &consent);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8829:14
+     |
+8829 |             &DataKey2::ConsentIndex(merchant.clone(), customer.clone(), terms_version.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8835:14
+     |
+8835 |             &DataKey2::ConsentRecord(consent_id),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8840:14
+     |
+8840 |             &DataKey2::ConsentIndex(merchant.clone(), customer.clone(), terms_version.clone()),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8890:41
+     |
+8890 |         env.storage().persistent().set(&DataKey2::RetryConfig, &cfg);
+     |                                         ^^^^^^^^
+     |                                         |
+     |                                         use of undeclared type `DataKey2`
+     |                                         help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8892:14
+     |
+8892 |             &DataKey2::RetryConfig,
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8924:19
+     |
+8924 |             .get(&DataKey2::RetryConfig)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8942:19
+     |
+8942 |             .get(&DataKey2::FailedDebitCounter)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8947:19
+     |
+8947 |             .set(&DataKey2::FailedDebitCounter, &record_id);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8949:14
+     |
+8949 |             &DataKey2::FailedDebitCounter,
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8969:23
+     |
+8969 |                 .set(&DataKey2::FailedDebit(record_id), &rec);
+     |                       ^^^^^^^^
+     |                       |
+     |                       use of undeclared type `DataKey2`
+     |                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8986:23
+     |
+8986 |                 .set(&DataKey2::FailedDebit(record_id), &rec);
+     |                       ^^^^^^^^
+     |                       |
+     |                       use of undeclared type `DataKey2`
+     |                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:8990:14
+     |
+8990 |             &DataKey2::FailedDebit(record_id),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9007:19
+     |
+9007 |             .get(&DataKey2::ConsentRecord(consent_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9031:19
+     |
+9031 |             .set(&DataKey2::ConsentRecord(consent_id), &consent);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9033:14
+     |
+9033 |             &DataKey2::ConsentRecord(consent_id),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9050:75
+     |
+9050 |         let consent_id_opt: Option<u32> = env.storage().persistent().get(&DataKey2::ConsentIndex(
+     |                                                                           ^^^^^^^^
+     |                                                                           |
+     |                                                                           use of undeclared type `DataKey2`
+     |                                                                           help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9060:43
+     |
+9060 |                 .get::<_, ConsentRecord>(&DataKey2::ConsentRecord(consent_id))
+     |                                           ^^^^^^^^
+     |                                           |
+     |                                           use of undeclared type `DataKey2`
+     |                                           help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9064:22
+     |
+9064 |                     &DataKey2::ConsentRecord(consent_id),
+     |                      ^^^^^^^^
+     |                      |
+     |                      use of undeclared type `DataKey2`
+     |                      help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9089:19
+     |
+9089 |             .get(&DataKey2::ConsentRecord(consent_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9108:19
+     |
+9108 |             .set(&DataKey2::ConsentRecord(consent_id), &consent);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9110:14
+     |
+9110 |             &DataKey2::ConsentRecord(consent_id),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9124:19
+     |
+9124 |             .get(&DataKey2::ConsentRecord(consent_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9128:14
+     |
+9128 |             &DataKey2::ConsentRecord(consent_id),
+     |              ^^^^^^^^
+     |              |
+     |              use of undeclared type `DataKey2`
+     |              help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9145:19
+     |
+9145 |             .get(&DataKey2::ConsentIndex(merchant, customer, terms_version))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9152:19
+     |
+9152 |             .get(&DataKey2::ConsentRecordCounter)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9157:19
+     |
+9157 |             .set(&DataKey2::ConsentRecordCounter, &next_id);
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9173:19
+     |
+9173 |             .get(&DataKey2::FailedDebit(record_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9191:19
+     |
+9191 |             .get(&DataKey2::RetryConfig)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9210:23
+     |
+9210 |                 .set(&DataKey2::FailedDebit(record_id), &rec);
+     |                       ^^^^^^^^
+     |                       |
+     |                       use of undeclared type `DataKey2`
+     |                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9212:18
+     |
+9212 |                 &DataKey2::FailedDebit(record_id),
+     |                  ^^^^^^^^
+     |                  |
+     |                  use of undeclared type `DataKey2`
+     |                  help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9223:27
+     |
+9223 |                     .set(&DataKey2::FailedDebit(record_id), &rec);
+     |                           ^^^^^^^^
+     |                           |
+     |                           use of undeclared type `DataKey2`
+     |                           help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9225:22
+     |
+9225 |                     &DataKey2::FailedDebit(record_id),
+     |                      ^^^^^^^^
+     |                      |
+     |                      use of undeclared type `DataKey2`
+     |                      help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9240:27
+     |
+9240 |                     .set(&DataKey2::FailedDebit(record_id), &rec);
+     |                           ^^^^^^^^
+     |                           |
+     |                           use of undeclared type `DataKey2`
+     |                           help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9242:22
+     |
+9242 |                     &DataKey2::FailedDebit(record_id),
+     |                      ^^^^^^^^
+     |                      |
+     |                      use of undeclared type `DataKey2`
+     |                      help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9270:19
+     |
+9270 |             .get(&DataKey2::FailedDebit(record_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9286:19
+     |
+9286 |             .get(&DataKey2::RetryConfig)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9305:23
+     |
+9305 |                 .set(&DataKey2::FailedDebit(record_id), &rec);
+     |                       ^^^^^^^^
+     |                       |
+     |                       use of undeclared type `DataKey2`
+     |                       help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9307:18
+     |
+9307 |                 &DataKey2::FailedDebit(record_id),
+     |                  ^^^^^^^^
+     |                  |
+     |                  use of undeclared type `DataKey2`
+     |                  help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9318:27
+     |
+9318 |                     .set(&DataKey2::FailedDebit(record_id), &rec);
+     |                           ^^^^^^^^
+     |                           |
+     |                           use of undeclared type `DataKey2`
+     |                           help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9320:22
+     |
+9320 |                     &DataKey2::FailedDebit(record_id),
+     |                      ^^^^^^^^
+     |                      |
+     |                      use of undeclared type `DataKey2`
+     |                      help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9334:27
+     |
+9334 |                     .set(&DataKey2::FailedDebit(record_id), &rec);
+     |                           ^^^^^^^^
+     |                           |
+     |                           use of undeclared type `DataKey2`
+     |                           help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9336:22
+     |
+9336 |                     &DataKey2::FailedDebit(record_id),
+     |                      ^^^^^^^^
+     |                      |
+     |                      use of undeclared type `DataKey2`
+     |                      help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9359:19
+     |
+9359 |             .get(&DataKey2::FailedDebit(record_id))
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+error[E0433]: failed to resolve: use of undeclared type `DataKey2`
+    --> contracts\ahjoor-payments\src\lib.rs:9367:19
+     |
+9367 |             .get(&DataKey2::RetryConfig)
+     |                   ^^^^^^^^
+     |                   |
+     |                   use of undeclared type `DataKey2`
+     |                   help: an enum with a similar name exists: `DataKey`
+
+warning: variable does not need to be mutable
+   --> contracts\ahjoor-payments\src\multi_token_invoice_impl.rs:330:13
+    |
+330 |         let mut payments = Vec::new(env);
+    |             ----^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `invoice_id`
+   --> contracts\ahjoor-payments\src\multi_token_invoice_impl.rs:329:44
+    |
+329 |     pub fn get_invoice_payments(env: &Env, invoice_id: u32) -> Vec<InvoicePayment> {
+    |                                            ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_invoice_id`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `now`
+    --> contracts\ahjoor-payments\src\lib.rs:2986:13
+     |
+2986 |         let now = env.ledger().timestamp();
+     |             ^^^ help: if this is intentional, prefix it with an underscore: `_now`
+
+warning: unused variable: `reason_hash`
+    --> contracts\ahjoor-payments\src\lib.rs:5063:74
+     |
+5063 |     pub fn pause_subscription_v2(env: Env, caller: Address, sub_id: u32, reason_hash: BytesN<32>) {
+     |                                                                          ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_reason_hash`
+
+warning: unused variable: `payment_id`
+    --> contracts\ahjoor-payments\src\lib.rs:6062:9
+     |
+6062 |         payment_id: u32,
+     |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_payment_id`
+
+warning: unused variable: `customer`
+    --> contracts\ahjoor-payments\src\lib.rs:6063:9
+     |
+6063 |         customer: &Address,
+     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_customer`
+
+warning: unused variable: `input_token`
+    --> contracts\ahjoor-payments\src\lib.rs:6064:9
+     |
+6064 |         input_token: &Address,
+     |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_input_token`
+
+warning: unused variable: `output_token`
+    --> contracts\ahjoor-payments\src\lib.rs:6065:9
+     |
+6065 |         output_token: &Address,
+     |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_token`
+
+warning: unused variable: `router`
+    --> contracts\ahjoor-payments\src\lib.rs:6068:13
+     |
+6068 |         let router: Address = env
+     |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_router`
+
+warning: unused variable: `max_slippage_bps`
+    --> contracts\ahjoor-payments\src\lib.rs:6076:13
+     |
+6076 |         let max_slippage_bps = slippage_cfg.max_bps;
+     |             ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_slippage_bps`
+
+Some errors have detailed explanations: E0425, E0433.
+For more information about an error, try `rustc --explain E0425`.
+warning: `ahjoor-payments` (lib) generated 32 warnings
+error: could not compile `ahjoor-payments` (lib) due to 227 previous errors; 32 warnings emitted

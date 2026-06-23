@@ -1,0 +1,544 @@
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+   --> contracts\ahjoor-token-whitelist\src\events.rs:139:16
+    |
+139 |     e.events().publish(
+    |                ^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: struct `TokenOracleUpdated` is never constructed
+  --> contracts\ahjoor-token-whitelist\src\events.rs:71:12
+   |
+71 | pub struct TokenOracleUpdated {
+   |            ^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `emit_token_oracle_updated` is never used
+  --> contracts\ahjoor-token-whitelist\src\events.rs:81:8
+   |
+81 | pub fn emit_token_oracle_updated(e: &Env, token: Address, old_oracle: Option<Address>, new_oracle: Option<Address>) {
+   |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: trait `TokenWhitelistInterface` is never used
+ --> contracts\ahjoor-token-whitelist\src\client.rs:7:11
+  |
+7 | pub trait TokenWhitelistInterface {
+  |           ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: `ahjoor-token-whitelist` (lib) generated 4 warnings
+warning: unused imports: `Bytes`, `Symbol`, `contract`, `contractimpl`, `panic_with_error`, and `token`
+ --> contracts\ahjoor-payments\src\multi_token_invoice.rs:3:5
+  |
+3 |     contract, contracterror, contractclient, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
+  |     ^^^^^^^^                                 ^^^^^^^^^^^^                ^^^^^^^^^^^^^^^^  ^^^^^           ^^^^^
+4 |     BytesN, Env, Map, String, Symbol, Vec,
+  |                               ^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `Bytes`, `contract`, `contracterror`, `contractimpl`, and `contracttype`
+ --> contracts\ahjoor-payments\src\multi_token_invoice_impl.rs:3:5
+  |
+3 |     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
+  |     ^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^                                    ^^^^^
+
+warning: unused imports: `Bytes`, `Symbol`, `contract`, `contractimpl`, `panic_with_error`, and `token`
+ --> contracts\ahjoor-payments\src\pre_approved_spending.rs:3:5
+  |
+3 |     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
+  |     ^^^^^^^^                 ^^^^^^^^^^^^                ^^^^^^^^^^^^^^^^  ^^^^^           ^^^^^
+4 |     BytesN, Env, Map, String, Symbol, Vec,
+  |                               ^^^^^^
+
+warning: unused imports: `Bytes`, `contract`, `contracterror`, `contractimpl`, `contracttype`, and `token`
+ --> contracts\ahjoor-payments\src\pre_approved_spending_impl.rs:3:5
+  |
+3 |     contract, contracterror, contractimpl, contracttype, panic_with_error, token, Address, Bytes,
+  |     ^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^  ^^^^^^^^^^^^                    ^^^^^           ^^^^^
+
+warning: unused imports: `Events` and `vec`
+ --> contracts\ahjoor-payments\src\test_consent.rs:7:31
+  |
+7 |     testutils::{Address as _, Events, Ledger},
+  |                               ^^^^^^
+8 |     vec, Address, BytesN, Env, String,
+  |     ^^^
+
+warning: unused import: `String`
+ --> contracts\ahjoor-payments\src\test_token_whitelist.rs:7:26
+  |
+7 |     token, Address, Env, String,
+  |                          ^^^^^^
+
+warning: unused imports: `Ledger` and `String`
+ --> contracts\ahjoor-payments\src\test_notification_keys.rs:5:39
+  |
+5 |     testutils::{Address as _, Events, Ledger},
+  |                                       ^^^^^^
+6 |     token, Address, Bytes, Env, String,
+  |                                 ^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+   --> contracts\ahjoor-payments\src\multi_token_invoice_impl.rs:607:22
+    |
+607 |         env.events().publish(
+    |                      ^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1313:16
+     |
+1313 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1319:16
+     |
+1319 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1642:16
+     |
+1642 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1649:16
+     |
+1649 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1665:16
+     |
+1665 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1672:16
+     |
+1672 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1685:16
+     |
+1685 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1692:16
+     |
+1692 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1704:16
+     |
+1704 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1861:16
+     |
+1861 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1868:16
+     |
+1868 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1875:16
+     |
+1875 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1889:16
+     |
+1889 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1901:16
+     |
+1901 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1916:16
+     |
+1916 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated method `soroban_sdk::events::Events::publish`: use the #[contractevent] macro on a contract event type
+    --> contracts\ahjoor-payments\src\events.rs:1923:16
+     |
+1923 |     e.events().publish(
+     |                ^^^^^^^
+
+warning: use of deprecated associated function `soroban_sdk::String::from_slice`: use from_str
+    --> contracts\ahjoor-payments\src\lib.rs:8656:39
+     |
+8656 |                 jurisdiction: String::from_slice(&env, ""),
+     |                                       ^^^^^^^^^^
+
+warning: use of deprecated associated function `soroban_sdk::String::from_slice`: use from_str
+  --> contracts\ahjoor-payments\src\test_consent.rs:60:13
+   |
+60 |     String::from_slice(env, s)
+   |             ^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> contracts\ahjoor-payments\src\multi_token_invoice_impl.rs:330:13
+    |
+330 |         let mut payments = Vec::new(env);
+    |             ----^^^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `invoice_id`
+   --> contracts\ahjoor-payments\src\multi_token_invoice_impl.rs:329:44
+    |
+329 |     pub fn get_invoice_payments(env: &Env, invoice_id: u32) -> Vec<InvoicePayment> {
+    |                                            ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_invoice_id`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `now`
+    --> contracts\ahjoor-payments\src\lib.rs:2982:13
+     |
+2982 |         let now = env.ledger().timestamp();
+     |             ^^^ help: if this is intentional, prefix it with an underscore: `_now`
+
+warning: unused variable: `reason_hash`
+    --> contracts\ahjoor-payments\src\lib.rs:5059:74
+     |
+5059 |     pub fn pause_subscription_v2(env: Env, caller: Address, sub_id: u32, reason_hash: BytesN<32>) {
+     |                                                                          ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_reason_hash`
+
+warning: unused variable: `payment_id`
+    --> contracts\ahjoor-payments\src\lib.rs:6058:9
+     |
+6058 |         payment_id: u32,
+     |         ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_payment_id`
+
+warning: unused variable: `customer`
+    --> contracts\ahjoor-payments\src\lib.rs:6059:9
+     |
+6059 |         customer: &Address,
+     |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_customer`
+
+warning: unused variable: `input_token`
+    --> contracts\ahjoor-payments\src\lib.rs:6060:9
+     |
+6060 |         input_token: &Address,
+     |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_input_token`
+
+warning: unused variable: `output_token`
+    --> contracts\ahjoor-payments\src\lib.rs:6061:9
+     |
+6061 |         output_token: &Address,
+     |         ^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_output_token`
+
+warning: unused variable: `router`
+    --> contracts\ahjoor-payments\src\lib.rs:6064:13
+     |
+6064 |         let router: Address = env
+     |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_router`
+
+warning: unused variable: `max_slippage_bps`
+    --> contracts\ahjoor-payments\src\lib.rs:6072:13
+     |
+6072 |         let max_slippage_bps = slippage_cfg.max_bps;
+     |             ^^^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_slippage_bps`
+
+warning: unused variable: `router_addr`
+    --> contracts\ahjoor-payments\src\lib.rs:6162:29
+     |
+6162 |                 if let Some(router_addr) = router {
+     |                             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_router_addr`
+
+warning: unused variable: `admin`
+  --> contracts\ahjoor-payments\src\test_token_whitelist.rs:69:9
+   |
+69 |         admin,
+   |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_admin`
+
+warning: unused variable: `customer`
+  --> contracts\ahjoor-payments\src\test_token_whitelist.rs:89:9
+   |
+89 |         customer,
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_customer`
+
+warning: unused variable: `events`
+  --> contracts\ahjoor-payments\src\test_notification_keys.rs:59:9
+   |
+59 |     let events = env.events().all();
+   |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_events`
+
+warning: unused variable: `admin`
+   --> contracts\ahjoor-payments\src\test_notification_keys.rs:138:15
+    |
+138 |     let (env, admin, customer, merchant, token, client) = setup_test_env();
+    |               ^^^^^ help: if this is intentional, prefix it with an underscore: `_admin`
+
+warning: unused variable: `env`
+   --> contracts\ahjoor-payments\src\test_notification_keys.rs:166:10
+    |
+166 |     let (env, _admin, customer, merchant, token, client) = setup_test_env();
+    |          ^^^ help: if this is intentional, prefix it with an underscore: `_env`
+
+warning: unused variable: `env`
+  --> contracts\ahjoor-payments\src\test_loyalty_points.rs:67:10
+   |
+67 |     let (env, client, _admin, merchant, customer, token_addr) = setup_loyalty_with_token();
+   |          ^^^ help: if this is intentional, prefix it with an underscore: `_env`
+
+warning: unused variable: `env`
+  --> contracts\ahjoor-payments\src\test_loyalty_points.rs:78:10
+   |
+78 |     let (env, client, _admin, merchant, customer, token_addr) = setup_loyalty_with_token();
+   |          ^^^ help: if this is intentional, prefix it with an underscore: `_env`
+
+warning: unused variable: `env2`
+  --> contracts\ahjoor-payments\src\test_loyalty_points.rs:92:10
+   |
+92 |     let (env2, client2, admin2, merchant2, customer2, token_addr2) = setup_loyalty_with_token();
+   |          ^^^^ help: if this is intentional, prefix it with an underscore: `_env2`
+
+warning: unused variable: `env`
+   --> contracts\ahjoor-payments\src\test_loyalty_points.rs:109:10
+    |
+109 |     let (env, client, admin, merchant, customer, token_addr) = setup_loyalty_with_token();
+    |          ^^^ help: if this is intentional, prefix it with an underscore: `_env`
+
+warning: unused variable: `payment`
+   --> contracts\ahjoor-payments\src\test_loyalty_points.rs:139:9
+    |
+139 |     let payment: Payment = env.as_contract(&env.register(AhjoorPaymentsContract, ()), || {
+    |         ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_payment`
+
+warning: unused variable: `env`
+  --> contracts\ahjoor-payments\src\test_buyer_trust_tier.rs:37:10
+   |
+37 |     let (env, client, _admin, merchant, buyer, _token, _tac) = setup();
+   |          ^^^ help: if this is intentional, prefix it with an underscore: `_env`
+
+warning: unused variable: `env`
+  --> contracts\ahjoor-payments\src\test_buyer_trust_tier.rs:53:10
+   |
+53 |     let (env, client, _admin, merchant, buyer, token, _tac) = setup();
+   |          ^^^ help: if this is intentional, prefix it with an underscore: `_env`
+
+warning: unused variable: `env`
+  --> contracts\ahjoor-payments\src\test_buyer_trust_tier.rs:75:10
+   |
+75 |     let (env, client, _admin, merchant, buyer, token, _tac) = setup();
+   |          ^^^ help: if this is intentional, prefix it with an underscore: `_env`
+
+warning: unused variable: `env`
+  --> contracts\ahjoor-payments\src\test_buyer_trust_tier.rs:91:10
+   |
+91 |     let (env, client, _admin, merchant, buyer, token, _tac) = setup();
+   |          ^^^ help: if this is intentional, prefix it with an underscore: `_env`
+
+warning: constant `MAX_TAGS` is never used
+  --> contracts\ahjoor-payments\src\lib.rs:76:7
+   |
+76 | const MAX_TAGS: u32 = 3;
+   |       ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: constant `SETTLEMENT_FEE_BPS` is never used
+  --> contracts\ahjoor-payments\src\lib.rs:80:7
+   |
+80 | const SETTLEMENT_FEE_BPS: i128 = 0;
+   |       ^^^^^^^^^^^^^^^^^^
+
+warning: fields `token_addr`, `token_client`, and `token_admin_client` are never read
+  --> contracts\ahjoor-payments\src\test_consent.rs:16:5
+   |
+11 | struct TestSetup<'a> {
+   |        --------- fields in this struct
+...
+16 |     token_addr: Address,
+   |     ^^^^^^^^^^
+17 |     token_client: TokenClient<'a>,
+   |     ^^^^^^^^^^^^
+18 |     token_admin_client: TokenAdminClient<'a>,
+   |     ^^^^^^^^^^^^^^^^^^
+
+warning: fields `admin` and `fee_recipient` are never read
+  --> contracts\ahjoor-payments\src\test_collateral.rs:17:5
+   |
+14 | struct CollateralSetup<'a> {
+   |        --------------- fields in this struct
+...
+17 |     admin: Address,
+   |     ^^^^^
+18 |     fee_recipient: Address,
+   |     ^^^^^^^^^^^^^
+
+warning: fields `admin` and `fee_recipient` are never read
+  --> contracts\ahjoor-payments\src\test_external_id_multisig_voucher.rs:14:5
+   |
+11 | struct Setup<'a> {
+   |        ----- fields in this struct
+...
+14 |     admin: Address,
+   |     ^^^^^
+15 |     fee_recipient: Address,
+   |     ^^^^^^^^^^^^^
+
+warning: function `setup_loyalty` is never used
+ --> contracts\ahjoor-payments\src\test_loyalty_points.rs:6:4
+  |
+6 | fn setup_loyalty<'a>() -> (Env, AhjoorPaymentsContractClient<'a>, Address, Address, Address) {
+  |    ^^^^^^^^^^^^^
+
+warning: function `token_addr_from_setup` is never used
+  --> contracts\ahjoor-payments\src\test_loyalty_points.rs:32:4
+   |
+32 | fn token_addr_from_setup(env: &Env, admin: &Address) -> Address {
+   |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: `ahjoor-payments` (lib test) generated 58 warnings (run `cargo fix --lib -p ahjoor-payments --tests` to apply 32 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running unittests src\lib.rs (target\debug\deps\ahjoor_payments-b7038af873d85b53.exe)
+
+running 122 tests
+test test_collateral::test_approve_merchant_without_collateral_panics - should panic ... ok
+test test_buyer_trust_tier::test_set_and_get_buyer_tier ... ok
+test test_collateral::test_approve_merchant_insufficient_collateral_panics - should panic ... ok
+test test_collateral::test_approve_merchant_requires_collateral ... ok
+test test_collateral::test_deposit_collateral_negative_panics - should panic ... ok
+test test_buyer_trust_tier::test_tier_limit_falls_back_to_global_when_unset ... ok
+test test_buyer_trust_tier::test_per_customer_override_takes_priority_over_tier ... ok
+test test_collateral::test_deposit_collateral_success ... ok
+test test_collateral::test_deposit_collateral_accumulates ... ok
+test test_collateral::test_deposit_collateral_zero_panics - should panic ... ok
+test test_buyer_trust_tier::test_each_tier_has_independent_limit ... ok
+test test_collateral::test_get_collateral_balance_unknown_merchant ... ok
+test test_buyer_trust_tier::test_tier_downgrade_takes_effect_immediately ... ok
+test test_collateral::test_set_min_collateral_default ... ok
+test test_collateral::test_set_min_collateral_negative_panics - should panic ... ok
+test test_collateral::test_set_min_collateral_by_admin ... ok
+test test_collateral::test_resolve_dispute_for_customer_slashes_collateral ... ok
+test test_collateral::test_resolve_dispute_for_merchant_no_slash ... ok
+test test_collateral::test_resolve_dispute_non_usdc_no_slash ... ok
+test test_collateral::test_withdraw_collateral_below_minimum_panics - should panic ... ok
+test test_consent::test_consent_expiry ... ok
+test test_collateral::test_resolve_dispute_slash_capped_by_collateral ... ok
+test test_collateral::test_withdraw_collateral_zero_panics - should panic ... ok
+test test_consent::test_create_consent_record ... ok
+test test_collateral::test_withdraw_collateral_exceeds_balance_panics - should panic ... ok
+test test_collateral::test_withdraw_collateral_success ... ok
+test test_consent::test_get_consent_id_by_triple ... ok
+test test_consent::test_duplicate_sign_consent_panics - should panic ... ok
+test test_consent::test_is_consent_valid ... ok
+test test_consent::test_sign_revoked_consent_panics - should panic ... ok
+test test_consent::test_revoke_consent ... ok
+test test_dynamic_settlement::test_create_payment_multi_token_requires_oracle_config - should panic ... ok
+test test_consent::test_multiple_consent_records ... ok
+test test_consent::test_sign_consent ... ok
+test test_dynamic_settlement::test_create_payment_multi_token_rejects_stale_price ... ok
+test test_external_id_multisig_voucher::test_expired_voucher_rejected - should panic ... ok
+test test_external_id_multisig_voucher::test_approval_window_expired_auto_cancels ... ok
+test test_dynamic_settlement::test_create_payment_multi_token_success ... ok
+test test_external_id_multisig_voucher::test_exhausted_voucher_rejected - should panic ... ok
+test test_external_id_multisig_voucher::test_high_value_payment_enters_pending_approval ... ok
+test test_external_id_multisig_voucher::test_duplicate_external_id_same_merchant_rejected - should panic ... ok
+test test_external_id_multisig_voucher::test_external_id_indexes_payment ... ok
+test test_external_id_multisig_voucher::test_issue_and_redeem_fixed_discount ... ok
+test test_external_id_multisig_voucher::test_issue_and_redeem_percentage_discount ... ok
+test test_external_id_multisig_voucher::test_low_value_payment_skips_multisig ... ok
+test test_external_id_multisig_voucher::test_multisig_policy_set_and_retrieved ... ok
+test test_external_id_multisig_voucher::test_m_equals_1_single_approval_sufficient ... ok
+test test_external_id_multisig_voucher::test_revoke_voucher_emits_event ... ok
+test test_external_id_multisig_voucher::test_revoked_voucher_rejected - should panic ... ok
+test test_external_id_multisig_voucher::test_payment_without_external_id_works_normally ... ok
+test test_external_id_multisig_voucher::test_m_of_n_approval_transitions_to_pending ... ok
+test test_external_id_multisig_voucher::test_no_voucher_payment_works_normally ... ok
+test test_external_id_multisig_voucher::test_voucher_exhausted_after_max_uses ... ok
+test test_external_id_multisig_voucher::test_same_external_id_different_merchants_allowed ... ok
+test test_merchant_ban::test_appeal_status_transitions ... ok
+test test_loyalty_points::test_floor_enforcement ... ok
+test test_loyalty_points::test_points_accrued_after_payment ... ok
+test test_loyalty_points::test_non_transferability ... ok
+test test_merchant_ban::test_ban_appeal_approval_with_cooling_off ... ok
+test test_loyalty_points::test_partial_redemption ... ok
+test test_loyalty_points::test_points_expiry ... ok
+test test_merchant_ban::test_cannot_appeal_during_cooling_off - should panic ... ok
+test test_merchant_ban::test_ban_appeal_rejection_cooldown ... ok
+test test_merchant_ban::test_duplicate_appeal_rejected - should panic ... ok
+test test_merchant_ban::test_cooling_off_period_enforced - should panic ... ok
+test test_merchant_ban::test_cannot_reject_resolved_appeal - should panic ... ok
+test test_merchant_ban::test_non_banned_merchant_cannot_appeal - should panic ... ok
+test test_merchant_ban::test_reinstate_merchant ... ok
+test test_merchant_ban::test_cannot_approve_resolved_appeal - should panic ... ok
+test test_merchant_ban::test_rejected_appeal_status ... ok
+test test_loyalty_points::test_full_redemption ... ok
+test test_merchant_ban::test_suspension_blocks_payments ... ok
+test test_notification_keys::test_empty_key_rejected - should panic ... ok
+test test_notification_keys::test_max_size_key_accepted ... ok
+test test_notification_keys::test_events_with_empty_notification_key ... ok
+test test_notification_keys::test_oversized_key_rejected - should panic ... ok
+test test_notification_keys::test_register_notification_key ... ok
+test test_notification_keys::test_key_removal_affects_subsequent_events ... ok
+test test_notification_keys::test_remove_notification_key ... ok
+test test_notification_keys::test_update_notification_key ... ok
+test test_notification_keys::test_multiple_merchants_different_keys ... ok
+test test_notification_keys::test_notification_key_persists_across_operations ... ok
+test test_notification_keys::test_payment_events_include_notification_key ... ok
+test test_referral::test_double_referral_rejected ... ok
+test test_retry_queue::test_insufficient_balance_stores_pending_record ... ok
+test test_retry_queue::test_early_retry_bypasses_backoff ... ok
+test test_retry_queue::test_backoff_doubles_per_attempt ... ok
+test test_referral::test_window_expiry_stops_accrual ... ok
+test test_retry_queue::test_max_attempts_leads_to_abandonment ... ok
+test test_referral::test_claim_commission ... ok
+test test_retry_queue::test_retry_after_customer_top_up ... ok
+test test_referral::test_zero_commission_config ... ok
+test test_retry_queue::test_retry_not_due_before_backoff - should panic ... ok
+test test_retry_queue::test_successful_debit_stores_succeeded_record ... ok
+test test_retry_queue::test_retry_after_backoff_succeeds ... ok
+test test_referral::test_commission_accrues ... ok
+test test_spending_limit::test_default_limit_applies ... ok
+test test_tip::test_default_max_tip_bps ... ok
+test test_spending_limit::test_limit_exceeded_rejected ... ok
+test test_spending_limit::test_individual_override_priority ... ok
+test test_tip::test_set_max_tip_bps ... ok
+test test_tip::test_create_payment_with_tipping_sets_flag ... ok
+test test_tip::test_create_payment_without_tipping_flag_false ... ok
+test test_tip::test_set_max_tip_bps_too_high - should panic ... ok
+test test_spending_limit::test_limit_removal_restores_flow ... ok
+test test_spending_limit::test_within_limit_succeeds ... ok
+test test_spending_limit::test_window_reset ... ok
+test test_tip::test_tip_exceeds_max_bps_panics - should panic ... ok
+test test_tip::test_tip_at_exact_max_bps_succeeds ... ok
+test test_tip::test_tip_forwarded_to_merchant ... ok
+test test_tip::test_tip_on_non_tip_payment_panics - should panic ... ok
+test test_tip::test_tip_is_fee_exempt ... ok
+test test_token_whitelist::test_batch_payment_with_mixed_tokens ... ok
+test test_token_whitelist::test_is_token_allowed_public_function ... ok
+test test_tip::test_zero_tip_completes_like_normal_payment ... ok
+test test_token_whitelist::test_payment_with_non_whitelisted_token_fails ... ok
+test test_token_whitelist::test_set_token_whitelist_contract ... ok
+test test_token_whitelist::test_subscription_with_non_whitelisted_token_fails ... ok
+test test_token_whitelist::test_set_token_whitelist_contract_unauthorized - should panic ... ok
+test test_token_whitelist::test_no_whitelist_contract_allows_all_tokens ... ok
+test test_token_whitelist::test_payment_with_whitelisted_token ... ok
+test test_token_whitelist::test_token_delisted_mid_operation ... ok
+
+test result: ok. 122 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.77s
+

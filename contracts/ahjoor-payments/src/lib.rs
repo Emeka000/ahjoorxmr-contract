@@ -1114,6 +1114,13 @@ impl AhjoorPaymentsContract {
 
         env.storage()
             .instance()
+            .set(&DataKey2::WithdrawalWindowSeconds, &86400u64);
+        env.storage()
+            .instance()
+            .set(&DataKey2::WithdrawalWindowCap, &i128::MAX);
+
+        env.storage()
+            .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
@@ -5706,6 +5713,41 @@ impl AhjoorPaymentsContract {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    pub fn set_default_withdrawal_limits(env: Env, admin: Address, window_seconds: u64, cap: i128) {
+        Self::require_not_paused(&env);
+        Self::require_admin(&env, &admin);
+
+        if window_seconds == 0 {
+            panic!("Window must be positive");
+        }
+        if cap <= 0 {
+            panic!("Cap must be positive");
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey2::WithdrawalWindowSeconds, &window_seconds);
+        env.storage()
+            .instance()
+            .set(&DataKey2::WithdrawalWindowCap, &cap);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    pub fn get_withdrawal_rate_limit(env: Env, merchant: Address) -> (u64, i128) {
+        if let Some(limit) = env.storage().persistent().get::<DataKey2, WithdrawalLimit>(
+            &DataKey2::MerchantWithdrawalLimit(merchant.clone()),
+        ) {
+            (limit.window_seconds, limit.cap)
+        } else {
+            let window_seconds = env.storage().instance().get::<DataKey2, u64>(&DataKey2::WithdrawalWindowSeconds).unwrap_or(86400);
+            let cap = env.storage().instance().get::<DataKey2, i128>(&DataKey2::WithdrawalWindowCap).unwrap_or(i128::MAX);
+            (window_seconds, cap)
+        }
     }
 
     /// Internal: check and update the rolling withdrawal window for a merchant.
