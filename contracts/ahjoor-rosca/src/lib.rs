@@ -19,6 +19,8 @@ pub(crate) const PERSISTENT_BUMP_AMOUNT: u32 = 120_000;
 const TEMP_LIFETIME_THRESHOLD: u32 = 10_000;
 const TEMP_BUMP_AMOUNT: u32 = 15_000;
 
+pub(crate) const MIGRATION_TIMEOUT_SECONDS: u64 = 604800; // 7 days in seconds
+
 pub mod types;
 pub use types::*;
 
@@ -34,7 +36,7 @@ mod test_reinvest;
 mod test_token_whitelist;
 mod test_slot_auction;
 mod test_sealed_slot_auction;
-// mod test_migration;  // TODO: File not found - needs to be created
+mod test_migration;
 mod migration_client;
 pub use migration_client::RoscaMigrationClient;
 
@@ -2611,6 +2613,10 @@ impl AhjoorContract {
             .get(member.clone())
             .unwrap_or_else(|| panic_with_error!(&env, ExtError2::MigrationNotFound));
 
+        if env.ledger().timestamp() > req.created_at + crate::MIGRATION_TIMEOUT_SECONDS {
+            panic_with_error!(&env, ExtError2::MigrationNotApproved);
+        }
+
         match req.state {
             MigrationApprovalState::Pending => {
                 req.state = MigrationApprovalState::SourceApproved;
@@ -2994,6 +3000,68 @@ impl AhjoorContract {
             on_time_count,
             slot_index: req.target_slot,
             migrated_at: env.ledger().timestamp(),
+        }
+    }
+
+    /// Cancels a pending cross-group migration request that has timed out.
+    /// Callable by the migrating member or this group's admin.
+    pub fn cancel_migration(env: Env, caller: Address, member: Address) {
+        internals::check_not_paused(&env);
+        caller.require_auth();
+
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Not initialized");
+
+        if caller != member && caller != admin {
+            panic_with_error!(&env, ExtError::OnlyAdminAllowed);
+        }
+
+        // Try to clear outbound migration requests
+        let mut requests: Map<Address, MigrationRequest> = env
+            .storage()
+            .instance()
+            .get(&DataKey3::MigrationRequests)
+            .unwrap_or(Map::new(&env));
+
+        if let Some(req) = requests.get(member.clone()) {
+            if env.ledger().timestamp() > req.created_at + crate::MIGRATION_TIMEOUT_SECONDS {
+                requests.remove(member.clone());
+                env.storage()
+                    .instance()
+                    .set(&DataKey3::MigrationRequests, &requests);
+            }
+        }
+
+        // Try to clear incoming migration requests (only on destination contract)
+        let mut incoming: Map<Address, IncomingMigration> = env
+            .storage()
+            .instance()
+            .get(&DataKey3::IncomingMigrations)
+            .unwrap_or(Map::new(&env));
+            
+        if incoming.contains_key(member.clone()) {
+            let inc = incoming.get(member.clone()).unwrap();
+            let src_client = RoscaMigrationClient::new(&env, &inc.from_group);
+            let req_opt = src_client.get_migration_request(&member);
+            let mut is_timed_out = false;
+            
+            if let Some(req) = req_opt {
+                if env.ledger().timestamp() > req.created_at + crate::MIGRATION_TIMEOUT_SECONDS {
+                    is_timed_out = true;
+                }
+            } else {
+                is_timed_out = true;
+            }
+
+            if is_timed_out {
+                incoming.remove(member.clone());
+                env.storage()
+                    .instance()
+                    .set(&DataKey3::IncomingMigrations, &incoming);
+            }
         }
     }
 
